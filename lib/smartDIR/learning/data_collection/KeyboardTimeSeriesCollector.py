@@ -1,6 +1,6 @@
 import os
 import csv
-import time
+import datetime
 import multiprocessing
 import numpy as np
 import pandas as pd
@@ -13,15 +13,15 @@ class Collect_Keyboard_Data:
     def __init__(self, kb_layout="QWERTY"):
         if kb_layout is None:
             raise ValueError("No keyboard layout specified.")
-        
-        self.kb_layout = kb_layout
-        
+
         self.MAX_PROCESSES = 3
         self.running_processes = 0
 
-        self.FEATURES = ['timestamp', 'key', 'state', 'press_duration', 'key_press_delay', 'special_key']
-        self.data = pd.DataFrame(columns=self.FEATURES)
-        TYPES = {'timestamp': float, 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool}
+        self.kb_layout = kb_layout
+
+        self.PREPROCESSED_FEATURES = ['timestamp', 'key', 'state', 'press_duration', 'key_press_delay', 'special_key']
+        self.data = pd.DataFrame(columns=self.PREPROCESSED_FEATURES)
+        TYPES = {'timestamp': 'datetime64[ns]', 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool}
         self.data = self.data.astype(TYPES)
         self.data = self.data.set_index('timestamp')
 
@@ -40,7 +40,7 @@ class Collect_Keyboard_Data:
                 pass
 
         def _on_key_press(key:kb.Key):
-            timestamp = time.time()
+            timestamp = datetime.datetime.now()
             key = str(key)
             state = 'press'
             press_duration = 0.0
@@ -57,7 +57,7 @@ class Collect_Keyboard_Data:
             self.data.loc[timestamp] = [key, state, press_duration, key_press_delay, special_key]
 
         def _on_key_release(key:kb.Key):
-            timestamp = time.time()
+            timestamp = datetime.datetime.now()
             key = str(key)
             state = 'release'
             press_duration = 0.0
@@ -79,54 +79,74 @@ class Collect_Keyboard_Data:
                 return self.listener.stop()
 
         if self.collecting:
-            with kb.Listener(on_press=_on_key_press(kb.Key), on_release=_on_key_release(kb.Key)) as listener:
-                listener.join()
+            self.listener = kb.Listener(on_press=_on_key_press, on_release=_on_key_release)
+            self.listener.start()
 
     def plot_data(self, real_time:bool=True, x_axis:str='timestamp', y_axis:str='press_duration'):
-        def _start_live_plotting(self):
-            if self.running_processes < self.MAX_PROCESSES and self.collecting is True:
-                self.live_plotting = True
-                self.running_processes += 1
-                self.plotting_process = multiprocessing.Process(target=self._live_plotting, args=('timestamp', y_axis))
-                
-        def _live_plotting(self, x_axis, y_axis):
+        def _live_plotting(x_axis, y_axis):
             plt.figure()
             while self.live_plotting:
                 plt.clf()
                 self.data.plot(x=x_axis, y=y_axis, ax=plt.gca())
-                plt.pause(.250)
+                plt.pause(.100)
 
                 if not self.collecting:
                     break
             
-            self._stop_live_plotting()
+            _stop_live_plotting()
 
-        def _stop_live_plotting(self):
+        def _start_live_plotting(x_axis, y_axis):
+            if self.running_processes < self.MAX_PROCESSES and self.collecting is True:
+                try:
+                    self.plotting_process = multiprocessing.Process(target=_live_plotting(x_axis, y_axis), args=('timestamp', y_axis))
+                    self.live_plotting = True
+                    self.running_processes += 1
+                except:
+                    print("Cannot start live plotting.")
+                    pass
+            else:
+                print("Either no processes running or no live data to plot.")
+                pass
+                
+
+        def _stop_live_plotting():
             if self.running_processes > 0:
                 try:
                     self.live_plotting = False
                     self.running_processes -= 1
-                    self.plotting_process.termiante()
+                    self.plotting_process.terminate()
                     self.plotting_process.join()
                 except:
+                    print("Cannot stop live plotting.")
                     pass
+            else:
+                print("No live plotting processes running.")
+                pass
 
         if real_time:
-            self._start_live_plotting(x_axis, y_axis)
+            _start_live_plotting(x_axis, y_axis)
         else:
-            self._stop_live_plotting()
+            _stop_live_plotting()
 
 
     def get_data(self):
         return self.data
     
     def save_data(self, remove_stored_examples:bool=False):
+        def _process_data(preprocessed_data:pd.DataFrame):
+            processed_data = pd.DataFrame(columns=self.PREPROCESSED_FEATURES)
+
+            return processed_data
+
         with open(self.kb_layout +'_keyboard.csv', 'w', newline='') as file:
-            writer = csv.DictWriter(file, fieldNames=self.FEATURES)
+            writer = csv.Writer(file, fieldNames=_process_data(self.data))
 
         if remove_stored_examples:
-            self.data = pd.DataFrame(columns=self.FEATURES)
+            self.data = pd.DataFrame(columns=self.PREPROCESSED_FEATURES)
 
 
 keyboard_data = Collect_Keyboard_Data()
+print("Keyboard data collector initialized.")
 keyboard_data.collect_data(activation=True)
+print("Keyboard data collector started.....")
+keyboard_data.plot_data(real_time=True, x_axis='timestamp', y_axis='key_press_delay')
