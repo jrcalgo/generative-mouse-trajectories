@@ -14,7 +14,7 @@ class Collect_Keyboard_Data:
         if kb_layout is None:
             raise ValueError("No keyboard layout specified.")
 
-        self.MAX_PROCESSES = 3
+        self.MAX_PROCESSES = 5
         self.running_processes = 0
 
         self.kb_layout = kb_layout
@@ -82,13 +82,14 @@ class Collect_Keyboard_Data:
             self.listener = kb.Listener(on_press=_on_key_press, on_release=_on_key_release)
             self.listener.start()
 
-    def plot_data(self, real_time:bool=True, x_axis:str='timestamp', y_axis:str='press_duration'):
+    def plot_data(self, x_axis, y_axis, real_time:bool=False):
         def _live_plotting(x_axis, y_axis):
             plt.figure()
             while self.live_plotting:
-                plt.clf()
-                self.data.plot(x=x_axis, y=y_axis, ax=plt.gca())
-                plt.pause(.100)
+                plt.show()
+                # plt.clf()
+                # self.data.plot(x=x_axis, y=y_axis, ax=plt.gca())
+                # plt.pause(.100)
 
                 if not self.collecting:
                     break
@@ -98,7 +99,7 @@ class Collect_Keyboard_Data:
         def _start_live_plotting(x_axis, y_axis):
             if self.running_processes < self.MAX_PROCESSES and self.collecting is True:
                 try:
-                    self.plotting_process = multiprocessing.Process(target=_live_plotting(x_axis, y_axis), args=('timestamp', y_axis))
+                    self.plotting_process = multiprocessing.Process(target=_live_plotting(x_axis, y_axis), args=(x_axis, y_axis))
                     self.live_plotting = True
                     self.running_processes += 1
                 except:
@@ -112,10 +113,10 @@ class Collect_Keyboard_Data:
         def _stop_live_plotting():
             if self.running_processes > 0:
                 try:
-                    self.live_plotting = False
-                    self.running_processes -= 1
                     self.plotting_process.terminate()
                     self.plotting_process.join()
+                    self.live_plotting = False
+                    self.running_processes -= 1
                 except:
                     print("Cannot stop live plotting.")
                     pass
@@ -149,4 +150,4 @@ keyboard_data = Collect_Keyboard_Data()
 print("Keyboard data collector initialized.")
 keyboard_data.collect_data(activation=True)
 print("Keyboard data collector started.....")
-keyboard_data.plot_data(real_time=True, x_axis='timestamp', y_axis='key_press_delay')
+keyboard_data.plot_data(x_axis=keyboard_data.data.index, y_axis=keyboard_data.data['press_duration'], real_time=True)
