@@ -18,8 +18,8 @@ class Collect_Keyboard_Data:
 
         self.FEATURES = ['timestamp', 'key', 'state', 'press_duration', 'key_press_delay', 'special_key']
         self.data = pd.DataFrame(columns=self.FEATURES)
-        TYPES = {'timestamp': float, 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool}
-        self.data = self.data.astype(TYPES)
+        self.TYPES = {'timestamp': float, 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool}
+        self.data = self.data.astype(self.TYPES)
         # self.data.set_index('timestamp', inplace=True)
     
     def get_data(self):
@@ -39,11 +39,12 @@ class Collect_Keyboard_Data:
                 pass
 
         def _on_key_press(key:kb.Key):
+            # print('Key pressed: {0}'.format(key))
             if key == kb.Key.esc:
                 self.collecting = False
+                print("Keyboard data collection stopped.....")
                 return False
 
-            print('Key pressed: {0}'.format(key))
             timestamp = datetime.datetime.now().timestamp()
             key = str(key)
             state = 'press'
@@ -58,11 +59,10 @@ class Collect_Keyboard_Data:
             if key is kb.HotKey:
                 special_key = True
 
-            new_row = {'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key}
-            self.data = pd.concat([self.data, pd.DataFrame([new_row])], ignore_index=True)
+            self.new_press_row = pd.DataFrame([{'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key}])
 
         def _on_key_release(key:kb.Key):
-            print('Key released: {0}'.format(key))
+            # print('Key released: {0}'.format(key))
             timestamp = datetime.datetime.now().timestamp()
             key = str(key)
             state = 'release'
@@ -77,8 +77,10 @@ class Collect_Keyboard_Data:
             if key is kb.HotKey:
                 special_key = True
 
-            new_row = {'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key}
-            self.data = pd.concat([self.data, pd.DataFrame([new_row])], ignore_index=True)
+            self.new_release_row = pd.DataFrame([{'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key}])
+            new_row_set = pd.concat([self.new_press_row, self.new_release_row], ignore_index=True)
+            self.data = pd.concat([self.data, new_row_set], ignore_index=True)
+            print("New set stored for {0}".format(key))
 
         if self.collecting:
             listener = kb.Listener(on_press=_on_key_press, on_release=_on_key_release)
@@ -90,21 +92,26 @@ class Collect_Keyboard_Data:
             raise ValueError("No axis specified.")
         elif x_axis not in self.data.columns or y_axis not in self.data.columns:
             raise ValueError("Invalid axis specified.")
-
         
-
+        plt.bar(self.data[x_axis], self.data[y_axis])
+        plt.show()
+        
     def save_data(self, remove_stored_examples:bool=False):
         with open(self.kb_layout +'_keyboardLog.csv', 'w', newline='') as file:
-            writer = csv.Writer(file, fieldNames=_process_data(self.data))
+            writer = csv.Writer(file, fieldNames=self.FEATURES)
 
         if remove_stored_examples:
             self.data = pd.DataFrame(columns=self.FEATURES)
-
+            self.data = self.data.astype(self.TYPES)
 
 
 keyboard_data = Collect_Keyboard_Data()
 print("Keyboard data collector initialized.....")
 print(type(keyboard_data.data))
 print("Keyboard data collector started.....")
-keyboard_data.collect_data(True)
-
+while True:
+    keyboard_data.collect_data()
+    if keyboard_data.collecting is False:
+        break
+print("Plotting data.....")
+keyboard_data.plot_data('key', 'press_duration')
