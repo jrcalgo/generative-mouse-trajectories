@@ -16,7 +16,7 @@ class Collect_Mouse_Data:
         self.mouse_dpi = os.system()
         self.os_mouse_sensitivity = os_mouse_sensitivity
         self.features = ['timestamp', 'x', 'y', 'x_velocity', 'y_velocity', 'button'] 
-        self.stored_data = pd.DataFrame(columns=self.features)
+        self.data = pd.DataFrame(columns=self.features)
 
     def collect_data(self, activation:bool=True):
         if activation is None:
