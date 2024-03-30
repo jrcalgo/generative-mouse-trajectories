@@ -1,4 +1,3 @@
-import os
 import csv
 import datetime
 import numpy as np
@@ -19,7 +18,7 @@ class Collect_Keyboard_Data:
 
         self.FEATURES = ['timestamp', 'key', 'state', 'press_duration', 'key_press_delay', 'special_key']
         self.data = pd.DataFrame(columns=self.FEATURES)
-        TYPES = {'timestamp': 'datetime64[ns]', 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool}
+        TYPES = {'timestamp': float, 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool}
         self.data = self.data.astype(TYPES)
         # self.data.set_index('timestamp', inplace=True)
     
@@ -40,7 +39,12 @@ class Collect_Keyboard_Data:
                 pass
 
         def _on_key_press(key:kb.Key):
-            timestamp = datetime.datetime.now()
+            if key == kb.Key.esc:
+                self.collecting = False
+                return False
+
+            print('Key pressed: {0}'.format(key))
+            timestamp = datetime.datetime.now().timestamp()
             key = str(key)
             state = 'press'
             press_duration = 0.00
@@ -49,7 +53,7 @@ class Collect_Keyboard_Data:
 
             if self.data.shape[0] > 0:
                 previous_timestamp = self.data.index[-1]
-                key_press_delay = timestamp - previous_timestamp - self.data['press_duration'].iloc[-1]
+                key_press_delay = timestamp + previous_timestamp
 
             if key is kb.HotKey:
                 special_key = True
@@ -58,7 +62,8 @@ class Collect_Keyboard_Data:
             self.data = pd.concat([self.data, pd.DataFrame([new_row])], ignore_index=True)
 
         def _on_key_release(key:kb.Key):
-            timestamp = datetime.datetime.now()
+            print('Key released: {0}'.format(key))
+            timestamp = datetime.datetime.now().timestamp()
             key = str(key)
             state = 'release'
             press_duration = 0.00
@@ -68,7 +73,6 @@ class Collect_Keyboard_Data:
             if self.data.shape[0] > 0:
                 previous_timestamp = self.data.index[-1]
                 press_duration = timestamp - previous_timestamp
-                key_press_delay = timestamp - previous_timestamp - self.data['press_duration'].iloc[-1]
 
             if key is kb.HotKey:
                 special_key = True
@@ -76,14 +80,10 @@ class Collect_Keyboard_Data:
             new_row = {'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key}
             self.data = pd.concat([self.data, pd.DataFrame([new_row])], ignore_index=True)
 
-        while self.collecting:
+        if self.collecting:
             listener = kb.Listener(on_press=_on_key_press, on_release=_on_key_release)
             listener.start()
-
-            if self.data.shape[0] > 0 and self.data.iloc[-1]['key'] == 'Key.esc':
-                self.collecting = False
-                listener.join()
-                listener.stop()
+            listener.join()
 
     def plot_data(self, x_axis, y_axis):
         if x_axis is None or y_axis is None:
@@ -101,14 +101,10 @@ class Collect_Keyboard_Data:
             self.data = pd.DataFrame(columns=self.FEATURES)
 
 
-def main():
-    keyboard_data = Collect_Keyboard_Data()
-    print("Keyboard data collector initialized.....")
-    print(type(keyboard_data.data))
-    print("Keyboard data collector started.....")
-    keyboard_data.collect_data(activation=True)
-    # keyboard_data.plot_data(x_axis=keyboard_data.data.index, y_axis=keyboard_data.data['press_duration'], real_time=True)
 
+keyboard_data = Collect_Keyboard_Data()
+print("Keyboard data collector initialized.....")
+print(type(keyboard_data.data))
+print("Keyboard data collector started.....")
+keyboard_data.collect_data(True)
 
-if __name__ == '__main__':
-    main()
