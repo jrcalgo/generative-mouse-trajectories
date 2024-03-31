@@ -1,6 +1,6 @@
+import os
 import csv
 import datetime
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -11,15 +11,13 @@ class Collect_Keyboard_Data:
         if kb_layout is None:
             raise ValueError("No keyboard layout specified.")
 
-        self.MAX_PROCESSES = 5
-        self.running_processes = 0
+        self.kb_layout:str = kb_layout
+        self.character_count:int = 0
 
-        self.kb_layout = kb_layout
-
-        self.FEATURES = ['timestamp', 'key', 'state', 'press_duration', 'key_press_delay', 'special_key']
-        self.data = pd.DataFrame(columns=self.FEATURES)
-        self.TYPES = {'timestamp': float, 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool}
-        self.data = self.data.astype(self.TYPES)
+        self.FEATURES:list = ['timestamp', 'key', 'state', 'press_duration', 'key_press_delay', 'special_key', 'wpm']
+        self.TYPES:dict = {'timestamp': float, 'key': str, 'state': str, 'press_duration': float, 'key_press_delay': float, 'special_key': bool, 'wpm': float}
+        self.data:pd = pd.DataFrame(columns=self.FEATURES)
+        self.data:pd = self.data.astype(self.TYPES)
         # self.data.set_index('timestamp', inplace=True)
     
     def get_data(self):
@@ -45,12 +43,19 @@ class Collect_Keyboard_Data:
                 print("Keyboard data collection stopped.....")
                 return False
 
+            if key == kb.Key.backspace:
+                if self.character_count > 0:
+                    self.character_count -= 1
+            else:
+                self.character_count += 1
+
             timestamp = datetime.datetime.now().timestamp()
             key = str(key)
             state = 'press'
             press_duration = 0.00
             key_press_delay = 0.00
             special_key = False
+            wpm = (self.character_count / 5) / float(timestamp / 60)
 
             if self.data.shape[0] > 0:
                 previous_timestamp = self.data.index[-1]
@@ -59,7 +64,7 @@ class Collect_Keyboard_Data:
             if key is kb.HotKey:
                 special_key = True
 
-            self.new_press_row = pd.DataFrame([{'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key}])
+            self.new_press_row = pd.DataFrame([{'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key, 'wpm': wpm}])
 
         def _on_key_release(key:kb.Key):
             # print('Key released: {0}'.format(key))
@@ -69,6 +74,7 @@ class Collect_Keyboard_Data:
             press_duration = 0.00
             key_press_delay = 0.00
             special_key = False
+            wpm = 0.00
 
             if self.data.shape[0] > 0:
                 previous_timestamp = self.data.index[-1]
@@ -96,21 +102,39 @@ class Collect_Keyboard_Data:
         plt.bar(self.data[x_axis], self.data[y_axis])
         plt.show()
         
-    def save_data(self, remove_stored_examples:bool=False):
-        with open(self.kb_layout +'_keyboardLog.csv', 'w', newline='') as file:
+    def save_data(self, save_words:bool=False, remove_stored_examples:bool=False):
+        file = self.kb_layout +'_keyStrokeLog.csv'
+        file_exists = {'existence': os.path.isfile(file), 'mode': 'a' if file_exists['existence'] else 'w', 'newline': '~~~New Session~~~\n' if file_exists['existence'] else ''}
+        with open(file, file_exists['mode'], newline=file_exists['newline']) as file:
             writer = csv.Writer(file, fieldNames=self.FEATURES)
-
+            if file_exists['existence'] is False:
+                writer.writeheader()
+            writer.writerows(self.data)
+                
+        if save_words:
+            file = self.kb_layout + '_wordLog.csv'
+            file_exists = {'existence': os.path.isfile(file), 'mode': 'a' if file_exists['existence'] else 'w', 'newline': '~~~New Session~~~\n' if file_exists['existence'] else ''}
+            with open(file, file_exists['mode'], newline=file_exists['newline']) as file:
+                writer = csv.Writer(file)
+                for key in self.data['key']:
+                    if key.len() == 1:
+                        writer.writecolumn(key)
+                    elif key == 'Key.space':
+                        writer.writecolumn(' ')
+                    elif key == 'Key.enter':
+                        writer.writecolumn('\n')
+            
         if remove_stored_examples:
             self.data = pd.DataFrame(columns=self.FEATURES)
             self.data = self.data.astype(self.TYPES)
-
+ 
 
 keyboard_data = Collect_Keyboard_Data()
 print("Keyboard data collector initialized.....")
 print(type(keyboard_data.data))
 print("Keyboard data collector started.....")
 while True:
-    keyboard_data.collect_data()
+    keyboard_data.collect_data(True)
     if keyboard_data.collecting is False:
         break
 print("Plotting data.....")

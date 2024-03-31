@@ -14,9 +14,14 @@ class Collect_Mouse_Data:
         self.running_processes = 0
 
         self.mouse_dpi = os.system()
-        self.os_mouse_sensitivity = os_mouse_sensitivity
-        self.features = ['timestamp', 'x', 'y', 'x_velocity', 'y_velocity', 'button'] 
-        self.data = pd.DataFrame(columns=self.features)
+        self.os_mouse_sensitivity = os.system()
+        self.FEATURES = ['timestamp', 'button', 'x', 'y', 'x_velocity', 'y_velocity'] 
+        self.TYPES:dict = {'timestamp': float, 'button': str, 'x': int, 'y': int, 'x_velocity': float, 'y_velocity': float}
+        self.data = pd.DataFrame(columns=self.FEATURES)
+        self.data = self.data.astype(self.TYPES)
+
+    def get_data(self):
+        return self.data
 
     def collect_data(self, activation:bool=True):
         if activation is None:
@@ -31,11 +36,8 @@ class Collect_Mouse_Data:
             except:
                 pass
 
-    def plot_data(self, x_axis, y_axis, real_time:bool=False):
-
-    def get_data(self):
-        return self.data
+    def plot_data(self, x_axis, y_axis, real_time:bool=False)
 
     def save_data(self):
         with open('mouseLog.csv', 'w', newline='') as file:
-            writer = csv.DictWriter(file, fieldNames=self.features)    
+            wr
