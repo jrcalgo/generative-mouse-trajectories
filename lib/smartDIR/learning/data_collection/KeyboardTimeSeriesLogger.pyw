@@ -139,3 +139,16 @@ while True:
         break
 print("Plotting data.....")
 keyboard_data.plot_data('key', 'press_duration')
+save_words = False
+remove_examples = False
+save_data = input("Save data? (y/n): ")
+if save_data == 'y':
+    save_data = input("Save words? (y/n): ")
+    if save_data == 'y':
+        save_words = True
+    remove_examples = input("Remove stored examples? (y/n): ")
+    if remove_examples == 'y':
+        remove_examples = True
+    keyboard_data.save_data(save_words, remove_examples)
+else:
+    print("Data not saved.....")
