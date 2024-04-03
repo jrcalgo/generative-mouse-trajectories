@@ -104,25 +104,30 @@ class Collect_Keyboard_Data:
         
     def save_data(self, save_words:bool=False, remove_stored_examples:bool=False):
         file = self.kb_layout +'_keyStrokeLog.csv'
-        file_exists = {'existence': os.path.isfile(file), 'mode': 'a' if file_exists['existence'] else 'w', 'newline': '~~~New Session~~~\n' if file_exists['existence'] else ''}
-        with open(file, file_exists['mode'], newline=file_exists['newline']) as file:
-            writer = csv.Writer(file, fieldNames=self.FEATURES)
+        file_exists = {'existence': os.path.isfile(file)}
+        file_exists['mode'] = 'a' if file_exists['existence'] else 'w'
+        with open(file, file_exists['mode'], newline='\n' if file_exists['existence'] else '') as file:
             if file_exists['existence'] is False:
-                writer.writeheader()
-            writer.writerows(self.data)
+                file.write(','.join(self.FEATURES) + '\n')
+
+            self.data.to_csv(file, mode=file_exists['mode'], header=False, index=False)
                 
         if save_words:
             file = self.kb_layout + '_wordLog.csv'
-            file_exists = {'existence': os.path.isfile(file), 'mode': 'a' if file_exists['existence'] else 'w', 'newline': '~~~New Session~~~\n' if file_exists['existence'] else ''}
-            with open(file, file_exists['mode'], newline=file_exists['newline']) as file:
-                writer = csv.Writer(file)
+            file_exists['existence'] = os.path.isfile(file)
+            file_exists['mode'] = 'a' if file_exists['existence'] else 'w'
+            with open(file, file_exists['mode'], newline='\n' if file_exists['existence'] else '') as file:
+                writer = csv.writer(file)
+                if file_exists['existence'] is True:
+                    writer.writerow(file_exists['new_session'])
+
                 for key in self.data['key']:
-                    if key.len() == 1:
-                        writer.writecolumn(key)
+                    if len(key) == 1:
+                        writer.write(key)
                     elif key == 'Key.space':
-                        writer.writecolumn(' ')
+                        writer.write(' ')
                     elif key == 'Key.enter':
-                        writer.writecolumn('\n')
+                        writer.write('\n')
             
         if remove_stored_examples:
             self.data = pd.DataFrame(columns=self.FEATURES)
@@ -137,8 +142,9 @@ while True:
     keyboard_data.collect_data(True)
     if keyboard_data.collecting is False:
         break
-print("Plotting data.....")
-keyboard_data.plot_data('key', 'press_duration')
+if input("plot data? (y/n): ") == 'y':
+    print("Plotting data.....")
+    keyboard_data.plot_data('timestamp', 'wpm')
 save_words = False
 remove_examples = False
 save_data = input("Save data? (y/n): ")
