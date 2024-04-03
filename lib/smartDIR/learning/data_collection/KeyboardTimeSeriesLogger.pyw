@@ -102,7 +102,7 @@ class Collect_Keyboard_Data:
         plt.bar(self.data[x_axis], self.data[y_axis])
         plt.show()
         
-    def save_data(self, save_words:bool=False, remove_stored_examples:bool=False):
+    def save_data(self, new_files:bool=False, save_words:bool=False, remove_stored_examples:bool=False):
         file = self.kb_layout +'_keyStrokeLog.csv'
         file_exists = {'existence': os.path.isfile(file)}
         file_exists['mode'] = 'a' if file_exists['existence'] else 'w'
@@ -119,21 +119,29 @@ class Collect_Keyboard_Data:
             with open(file, file_exists['mode'], newline='\n' if file_exists['existence'] else '') as file:
                 writer = csv.writer(file)
                 if file_exists['existence'] is True:
-                    writer.writerow(file_exists['new_session'])
+                    writer.writerow('\n\n~~~~~New Session~~~~~\n\n')
 
+                row_word_count = 0
+                new_row = []
                 for key in self.data['key']:
                     if len(key) == 1:
-                        writer.write(key)
+                        new_row.append(key)
                     elif key == 'Key.space':
-                        writer.write(' ')
+                        new_row.append(' ')
+                        row_word_count += 1
+                        if row_word_count == 20:
+                            writer.writerow(new_row)
+                            new_row = []
+                            row_word_count = 0
                     elif key == 'Key.enter':
-                        writer.write('\n')
+                        writer.writerow(new_row)
+                        new_row = []
+                        row_word_count = 0
             
         if remove_stored_examples:
             self.data = pd.DataFrame(columns=self.FEATURES)
             self.data = self.data.astype(self.TYPES)
  
-
 keyboard_data = Collect_Keyboard_Data()
 print("Keyboard data collector initialized.....")
 print(type(keyboard_data.data))
@@ -147,7 +155,7 @@ if input("plot data? (y/n): ") == 'y':
     keyboard_data.plot_data('timestamp', 'wpm')
 save_words = False
 remove_examples = False
-save_data = input("Save data? (y/n): ")
+save_data: str = input("Save data? (y/n): ")
 if save_data == 'y':
     save_data = input("Save words? (y/n): ")
     if save_data == 'y':
