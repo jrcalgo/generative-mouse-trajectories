@@ -121,22 +121,17 @@ class Collect_Keyboard_Data:
                 if file_exists['existence'] is True:
                     writer.writerow('\n\n~~~~~New Session~~~~~\n\n')
 
-                row_word_count = 0
                 new_row = []
                 for key in self.data['key']:
                     if len(key) == 1:
                         new_row.append(key)
                     elif key == 'Key.space':
                         new_row.append(' ')
-                        row_word_count += 1
-                        if row_word_count == 20:
-                            writer.writerow(new_row)
-                            new_row = []
-                            row_word_count = 0
-                    elif key == 'Key.enter':
                         writer.writerow(new_row)
                         new_row = []
-                        row_word_count = 0
+                    elif key == 'Key.enter':
+                        writer.writerow('')
+                        new_row = []
             
         if remove_stored_examples:
             self.data = pd.DataFrame(columns=self.FEATURES)
