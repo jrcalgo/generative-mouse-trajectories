@@ -1,6 +1,7 @@
 import os
 import csv
 import datetime
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -43,13 +44,13 @@ class Collect_Keyboard_Data:
                 print("Keyboard data collection stopped.....")
                 return False
 
-            if key == kb.Key.backspace:
+            if key != kb.Key.backspace:
+                self.character_count += 1
+            else:
                 if self.character_count > 0:
                     self.character_count -= 1
-            else:
-                self.character_count += 1
 
-            timestamp = datetime.datetime.now().timestamp()
+            timestamp = datetime.datetime.now().timestamp() * 1000 # in milliseconds
             key = str(key)
             state = 'press'
             press_duration = 0.00
@@ -61,26 +62,26 @@ class Collect_Keyboard_Data:
                 previous_timestamp = self.data.index[-1]
                 key_press_delay = timestamp + previous_timestamp
 
-            if key is kb.HotKey:
+            if 'Key.' in key:
                 special_key = True
 
             self.new_press_row = pd.DataFrame([{'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key, 'wpm': wpm}])
 
         def _on_key_release(key:kb.Key):
             # print('Key released: {0}'.format(key))
-            timestamp = datetime.datetime.now().timestamp()
+            timestamp = datetime.datetime.now().timestamp() * 1000 # in milliseconds
             key = str(key)
             state = 'release'
             press_duration = 0.00
             key_press_delay = 0.00
             special_key = False
-            wpm = 0.00
+            wpm = self.new_press_row['wpm'].iloc[-1]
 
             if self.data.shape[0] > 0:
                 previous_timestamp = self.data.index[-1]
                 press_duration = timestamp - previous_timestamp
 
-            if key is kb.HotKey:
+            if 'Key.' in key:
                 special_key = True
 
             self.new_release_row = pd.DataFrame([{'timestamp': timestamp, 'key': key, 'state': state, 'press_duration': press_duration, 'key_press_delay': key_press_delay, 'special_key': special_key}])
@@ -102,7 +103,7 @@ class Collect_Keyboard_Data:
         plt.bar(self.data[x_axis], self.data[y_axis])
         plt.show()
         
-    def save_data(self, new_files:bool=False, save_words:bool=False, remove_stored_examples:bool=False):
+    def save_data(self, save_words:bool=False, remove_stored_examples:bool=False):
         file = self.kb_layout +'_keyStrokeLog.csv'
         file_exists = {'existence': os.path.isfile(file)}
         file_exists['mode'] = 'a' if file_exists['existence'] else 'w'
@@ -115,22 +116,22 @@ class Collect_Keyboard_Data:
         if save_words:
             file = self.kb_layout + '_wordLog.csv'
             file_exists['existence'] = os.path.isfile(file)
+            next_file_num = 1
+            while file_exists['existence'] is True:
+                file = self.kb_layout + '_wordLog_' + str(next_file_num) + '.csv'
+                file_exists['existence'] = os.path.isfile(file)
+                next_file_num += 1
             file_exists['mode'] = 'a' if file_exists['existence'] else 'w'
             with open(file, file_exists['mode'], newline='\n' if file_exists['existence'] else '') as file:
                 writer = csv.writer(file)
-                if file_exists['existence'] is True:
-                    writer.writerow('\n\n~~~~~New Session~~~~~\n\n')
-
                 new_row = []
                 for key in self.data['key']:
                     if len(key) == 1:
                         new_row.append(key)
                     elif key == 'Key.space':
                         new_row.append(' ')
-                        writer.writerow(new_row)
-                        new_row = []
                     elif key == 'Key.enter':
-                        writer.writerow('')
+                        writer.writerow(np.array2string(np.array(new_row), separator='').replace('[', '').replace(']', ''))
                         new_row = []
             
         if remove_stored_examples:
