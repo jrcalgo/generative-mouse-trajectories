@@ -1,0 +1,8 @@
+//
+// Created by tybg on 10/20/24.
+//
+
+#ifndef KEYBOARD_ACTIVITY_LOGGER_H
+#define KEYBOARD_ACTIVITY_LOGGER_H
+
+#endif //KEYBOARD_ACTIVITY_LOGGER_H
