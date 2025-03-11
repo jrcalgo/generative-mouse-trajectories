@@ -1,0 +1,18 @@
+[package]
+name = "mouse-collection-environment"
+version = "0.1.0"
+authors = ["jrcalgo <jacksonr121@outlook.com>"]
+edition = "2024"
+description = "Collection environment executable for generating computer mouse trajectories in a downstream task"
+keywords = ['collection', 'mouse-data', 'mouse-trajectories', 'environment']
+categories = ['accessibility', 'development-tools']
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.43.0", features = ["full"] }
+winit = "0.30.9"
+iced = "0.13.1"
+rand = "0.9.0"
+
+[profile.release]
+opt-level = 3
