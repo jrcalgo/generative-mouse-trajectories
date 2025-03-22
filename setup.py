@@ -3,18 +3,17 @@ from setuptools import setup
 setup(
     name='smartDIR',
     version='1.0.0',
-    packages=['smartdir'],
-    package_dir={'': 'smartDIR'},
+    packages=['generative-mouse-trajectories'],
+    package_dir={'': 'generative-mouse-trajectories'},
     license='MIT License',
     author='jrcalgo',
     author_email='jacksonr121@outlook.com',
-    long_description='SmartDIR is a Python module for collecting, processing, and training a GAN on mouse and keyboard data.'
-                     'It is designed to be used in conjunction with the smartDIR GUI collection environment.'
-                     'Replicates and imitates human mouse and keyboard activity.',
+    long_description='Generative-Mouse-Trajectories is for processing and training a GAN on mouse data.'
+                     'It is designed to be used in conjunction with the Mouse-Collection-Environment Rust GUI.'
+                     'Learns to replicates and imitates human mouse behavior. Python demo GUI included.',
     install_requires=[
-        'pysdl2',
         'keras',
-        'tensorflow',
+        'pytorch',
         'tensorboard',
         'numpy'
     ],
