@@ -18,8 +18,10 @@ use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+const DATA_DIR: &str = "data";
+
 #[derive(Clone)]
-pub enum ClickEvent {
+enum ClickEvent {
     Left,
     Middle,
     Right,
@@ -39,7 +41,7 @@ impl fmt::Display for ClickEvent {
 }
 
 #[derive(Clone)]
-pub enum ScrollEvent {
+enum ScrollEvent {
     Up,
     Down,
     None,
@@ -59,79 +61,69 @@ impl fmt::Display for ScrollEvent {
 type Coordinate = (f64, f64);
 
 #[derive(Clone)]
-pub struct MouseMovementAttributes {
-    pub mouse_dpi: usize,
-    pub current_position: Coordinate,
-    pub movement_delta: Coordinate,
-    pub distance_traveled: f64,
-    pub path_length: f64,
-    pub direction_angles: f64,
-    pub velocity: f64,
-    pub acceleration: f64,
-    pub curvature: f64,
-    pub jerk: f64,
+struct MouseMovementAttributes {
+    mouse_dpi: usize,
+    current_position: Coordinate,
+    movement_delta: Coordinate,
+    distance_traveled: f64,
+    path_length: f64,
+    direction_angles: f64,
+    velocity: f64,
+    acceleration: f64,
+    curvature: f64,
+    jerk: f64,
 }
 
 #[derive(Clone)]
-pub struct TemporalAttributes {
-    pub timestamp: SystemTime,
-    pub time_between_movements: f64,
-    pub total_duration: f64,
-    pub hover_time: f64,
+struct TemporalAttributes {
+    timestamp: SystemTime,
+    time_between_movements: f64,
+    total_duration: f64,
+    hover_time: f64,
 }
 
 #[derive(Clone)]
-pub struct BehavioralAttributes {
-    pub click_events: ClickEvent,
-    pub scroll_events: ScrollEvent,
+struct BehavioralAttributes {
+    click_events: ClickEvent,
+    scroll_events: ScrollEvent,
 }
 
 #[derive(Clone)]
-pub struct CollectedData {
-    pub temporal_attributes: TemporalAttributes,
-    pub mouse_attributes: MouseMovementAttributes,
-    pub behavioral_attributes: BehavioralAttributes,
+struct CollectedData {
+    temporal_attributes: TemporalAttributes,
+    mouse_attributes: MouseMovementAttributes,
+    behavioral_attributes: BehavioralAttributes,
 }
 
 #[derive(Clone, Default)]
-pub struct DerivedAttributes {
-    pub average_velocity: f64,
-    pub peak_velocity: f64,
-    pub average_acceleration: f64,
-    pub peak_acceleration: f64,
-    pub average_momentum: f64,
-    pub peak_momentum: f64,
-    pub smoothness: f64,
-    pub deviation_from_ideal_path: f64,
-    pub idle_time: f64,
-    pub fitts_index_of_difficulty: f64,
-    pub fitts_movement_time: f64,
-}
-
-#[derive(Clone, Default)]
-pub struct SystemAttributes {
-    pub screen_width: usize,
-    pub screen_height: usize,
-    pub window_width: usize,
-    pub window_height: usize,
-    pub os_device_info: String,
+struct DerivedAttributes {
+    average_velocity: f64,
+    peak_velocity: f64,
+    average_acceleration: f64,
+    peak_acceleration: f64,
+    average_momentum: f64,
+    peak_momentum: f64,
+    smoothness: f64,
+    deviation_from_ideal_path: f64,
+    idle_time: f64,
+    fitts_index_of_difficulty: f64,
+    fitts_movement_time: f64,
 }
 
 #[derive(Default)]
-pub struct CollectionBuffer {
-    pub collected_data: Vec<CollectedData>,
+struct CollectionBuffer {
+    collected_data: Vec<CollectedData>,
 }
 
 #[derive(Default)]
 struct DerivationReport {
-    pub report: DerivedAttributes,
+    report: DerivedAttributes,
 }
 
 pub struct MouseCollector {
-    pub record_file_path: PathBuf,
-    pub system_attributes: SystemAttributes,
-    pub collection_buffer: Arc<TokioRwLock<CollectionBuffer>>,
-    pub derivation_report: Arc<TokioRwLock<DerivationReport>>,
+    pub record_filename: Arc<RwLock<String>>,
+    collection_buffer: Arc<TokioRwLock<CollectionBuffer>>,
+    derivation_report: Arc<TokioRwLock<DerivationReport>>,
     pub start_timestamp: Option<time::SystemTime>,
     pub last_left_click_timestamp: Option<time::SystemTime>,
     pub listening_handle: TokioMutex<Option<task::JoinHandle<()>>>,
@@ -141,17 +133,17 @@ pub struct MouseCollector {
 
 impl MouseCollector {
     pub async fn new(start: bool, init_cmd_reporting: bool) -> Arc<Self> {
-        let record_file_path = PathBuf::from("./mouse_data.txt");
+        let record_filename = Arc::new(RwLock::new("data.csv".to_string()));
 
-        let collection_buffer = Arc::new(TokioRwLock::new(CollectionBuffer {
-            collected_data: Vec::new(),
-        }));
+        let collection_buffer: Arc<tokio::sync::RwLock<CollectionBuffer>> =
+            Arc::new(TokioRwLock::new(CollectionBuffer {
+                collected_data: Vec::new(),
+            }));
 
         let mouse_collector = Arc::new(MouseCollector {
-            record_file_path,
-            system_attributes: Default::default(),
-            derivation_report: Default::default(),
+            record_filename,
             collection_buffer,
+            derivation_report: Default::default(),
             start_timestamp: None,
             last_left_click_timestamp: None,
             listening_handle: TokioMutex::new(None),
@@ -160,8 +152,12 @@ impl MouseCollector {
         });
 
         if start {
-            let collector_clone = mouse_collector.clone();
-            let handlers = Self::start_collecting(collector_clone, init_cmd_reporting).await;
+            let collector_clone: Arc<MouseCollector> = mouse_collector.clone();
+            let handlers: (
+                Option<task::JoinHandle<()>>,
+                Option<JoinHandle<()>>,
+                Option<task::JoinHandle<()>>,
+            ) = Self::start_collecting(collector_clone, init_cmd_reporting).await;
 
             let mut listening_handle: Option<&tokio::task::JoinHandle<()>> =
                 mouse_collector.listening_handle.lock().await.as_ref();
@@ -186,18 +182,18 @@ impl MouseCollector {
         Option<thread::JoinHandle<()>>,
         Option<task::JoinHandle<()>>,
     ) {
-        let listen_clone = self.clone();
-        let listening_handle = tokio::spawn(async move {
+        let listen_clone: Arc<MouseCollector> = self.clone();
+        let listening_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
             listen_clone.mouse_listener().await;
         });
 
-        let record_clone = self.clone();
-        let recording_handle = thread::spawn(move || {
+        let record_clone: Arc<MouseCollector> = self.clone();
+        let recording_handle: JoinHandle<()> = thread::spawn(move || {
             record_clone.mouse_recorder();
         });
 
-        let reporting_handle = if report {
-            let report_clone = self.clone();
+        let reporting_handle: Option<tokio::task::JoinHandle<()>> = if report {
+            let report_clone: Arc<MouseCollector> = self.clone();
             Some(tokio::spawn(async move {
                 report_clone.cmd_report().await;
             }))
@@ -269,7 +265,9 @@ impl MouseRecorder for MouseCollector {
                             .write()
                             .await
                             .collected_data
-                            .retain(|event| event.temporal_attributes.timestamp >= current_timestamp);
+                            .retain(|event| {
+                                event.temporal_attributes.timestamp >= current_timestamp
+                            });
                     });
                 }
             } else {
@@ -290,10 +288,10 @@ impl MouseRecorder for MouseCollector {
         let mut previous_acceleration: f64 = 0.0;
 
         for (i, event) in data.iter().enumerate() {
-            let mut new_event = event.clone();
-            let current_timestamp = event.temporal_attributes.timestamp;
+            let mut new_event: CollectedData = event.clone();
+            let current_timestamp: SystemTime = event.temporal_attributes.timestamp;
 
-            let first_timestamp = data[0].temporal_attributes.timestamp;
+            let first_timestamp: SystemTime = data[0].temporal_attributes.timestamp;
             let total_duration: f64 = current_timestamp
                 .duration_since(first_timestamp)
                 .map(|d| d.as_secs_f64())
@@ -310,35 +308,35 @@ impl MouseRecorder for MouseCollector {
                     .unwrap_or(0.0);
                 new_event.temporal_attributes.time_between_movements = time_delta;
 
-                let previous_coord = previous_event.mouse_attributes.current_position;
-                let current_coord = new_event.mouse_attributes.current_position;
-                let delta_coord = (
+                let previous_coord: Coordinate = previous_event.mouse_attributes.current_position;
+                let current_coord: Coordinate = new_event.mouse_attributes.current_position;
+                let delta_coord: Coordinate = (
                     current_coord.0 - previous_coord.0,
                     current_coord.1 - previous_coord.1,
                 );
                 new_event.mouse_attributes.movement_delta = delta_coord;
 
-                let distance_traveled = (delta_coord.0.powi(2) + delta_coord.1.powi(2)).sqrt();
+                let distance_traveled: f64 = (delta_coord.0.powi(2) + delta_coord.1.powi(2)).sqrt();
                 new_event.mouse_attributes.distance_traveled = distance_traveled;
 
                 cumulative_path_length += distance_traveled;
                 new_event.mouse_attributes.path_length = cumulative_path_length;
 
-                let velocity = if time_delta > 0.0 {
+                let velocity: f64 = if time_delta > 0.0 {
                     distance_traveled / time_delta
                 } else {
                     0.0
                 };
                 new_event.mouse_attributes.velocity = velocity;
 
-                let acceleration = if i > 1 && time_delta > 0.0 {
+                let acceleration: f64 = if i > 1 && time_delta > 0.0 {
                     (velocity - previous_velocity) / time_delta
                 } else {
                     0.0
                 };
                 new_event.mouse_attributes.acceleration = acceleration;
 
-                let jerk = if i > 1 && time_delta > 0.0 {
+                let jerk: f64 = if i > 1 && time_delta > 0.0 {
                     (acceleration - previous_acceleration) / time_delta
                 } else {
                     0.0
@@ -347,7 +345,7 @@ impl MouseRecorder for MouseCollector {
 
                 new_event.mouse_attributes.direction_angles = delta_coord.1.atan2(delta_coord.0);
 
-                let hover_threshold = 1.0;
+                let hover_threshold: f64 = 1.0;
                 if distance_traveled < hover_threshold {
                     new_event.temporal_attributes.hover_time =
                         previous_event.temporal_attributes.hover_time + time_delta;
@@ -457,8 +455,9 @@ impl MouseRecorder for MouseCollector {
             datetime.format("%H:%M:%S%.4f").to_string()
         }
 
-        let mut writer: csv::Writer<File> =
-            csv::Writer::from_writer(File::create("data.csv").unwrap());
+        let mut writer: csv::Writer<File> = csv::Writer::from_writer(
+            File::create(PathBuf::from(DATA_DIR).join("data.csv")).unwrap(),
+        );
         // append header
         writer
             .write_record([
@@ -594,7 +593,8 @@ impl ApplicationHandler<()> for MouseApp<'_> {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        const MAX_BUFFER_SIZE: usize = 10000;
+        const MAX_BUFFER_SIZE: usize = 50000;
+        const MIN_PROCESSING_SIZE: usize = MAX_BUFFER_SIZE / 2;
         let mut buffer: Vec<CollectedData> = Vec::with_capacity(MAX_BUFFER_SIZE);
         let mut last_position: Option<Coordinate> = None;
         match event {
@@ -632,7 +632,7 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                     },
                 };
                 buffer.push(new_data);
-                if buffer.len() >= MAX_BUFFER_SIZE-1000 {
+                if buffer.len() >= MIN_PROCESSING_SIZE {
                     self.collector.append_new_collection(&buffer);
                     buffer.clear();
                 }
@@ -675,7 +675,7 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                     },
                 };
                 buffer.push(new_data);
-                if buffer.len() >= MAX_BUFFER_SIZE-1000 {
+                if buffer.len() >= MIN_PROCESSING_SIZE {
                     self.collector.append_new_collection(&buffer);
                     buffer.clear();
                 }
@@ -717,7 +717,7 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                     },
                 };
                 buffer.push(new_data);
-                if buffer.len() >= MAX_BUFFER_SIZE-1000 {
+                if buffer.len() >= MIN_PROCESSING_SIZE {
                     self.collector.append_new_collection(&buffer);
                     buffer.clear();
                 }
