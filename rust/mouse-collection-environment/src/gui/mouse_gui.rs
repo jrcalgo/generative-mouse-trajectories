@@ -1,21 +1,26 @@
 use iced::event::Status;
-use iced::widget::canvas::{Cache, Frame, Geometry, Path, Text};
+use iced::widget::button::Status as buttonStatus;
+use iced::widget::canvas::{Cache, Frame, Path, Text};
 use iced::widget::{Canvas, button, canvas, column, container, row};
-use iced::{
-    Alignment, Color, Element, Event, Length, Pixels, Point, Rectangle, Settings, Size, Theme,
-    application, event, mouse,
-};
+use iced::{Alignment, Color, Element, Length, Pixels, Point, Rectangle, Size, Theme, mouse};
+
+use crate::gui::stylesheet::*;
+use crate::mouse_collector::MouseCollector;
 use iced_graphics::core::Widget;
 use iced_graphics::geometry;
 use rand::Rng;
+use rand::prelude::ThreadRng;
+use std::rc::Rc;
 
 const CANVAS_WIDTH: u32 = 900;
 const CANVAS_HEIGHT: u32 = 900;
 const BUTTON_WIDTH: f32 = 100.0;
 const BUTTON_HEIGHT: f32 = 50.0;
 
+pub(crate) const THEME: Theme = Theme::Dark;
+
 #[derive(Debug, Clone)]
-enum Message {
+pub(crate) enum Message {
     ToggleCollecting,
     EditSettings,
     CanvasClicked(Point),
@@ -23,10 +28,10 @@ enum Message {
 
 /// The application’s state.
 #[derive(Default)]
-struct GuiEnvironment {
+pub(crate) struct GuiEnvironment {
     collecting: bool,
     game_buttons: Vec<GameButton>,
-    canvas_cache: Cache,
+    canvas_cache: Rc<Cache>,
 }
 
 /// A game button with a rectangular area and a flag indicating the "real" button.
@@ -36,6 +41,7 @@ struct GameButton {
     is_real: bool,
 }
 
+/// Returns whether the given point is inside the game button.
 impl GameButton {
     fn contains(&self, point: Point) -> bool {
         point.x >= self.rect.x
@@ -45,24 +51,25 @@ impl GameButton {
     }
 }
 
+/// The application's environment.
 impl GuiEnvironment {
     fn new() -> Self {
         Self {
             collecting: false,
             game_buttons: Vec::new(),
-            canvas_cache: Cache::new(),
+            canvas_cache: Rc::new(Cache::new()),
         }
     }
 
     fn spawn_buttons(&mut self) {
         self.game_buttons.clear();
-        let mut rng = rand::thread_rng();
-        let num_buttons = rng.gen_range(3..=6);
-        let real_index = rng.gen_range(0..num_buttons);
+        let mut rng: ThreadRng = rand::rng();
+        let num_buttons: i32 = rng.random_range(3..=6);
+        let real_index: i32 = rng.random_range(0..num_buttons);
 
         for i in 0..num_buttons {
-            let x = rng.gen_range(0.0..(CANVAS_WIDTH as f32 - BUTTON_WIDTH));
-            let y = rng.gen_range(0.0..(CANVAS_HEIGHT as f32 - BUTTON_HEIGHT));
+            let x = rng.random_range(0.0..(CANVAS_WIDTH as f32 - BUTTON_WIDTH));
+            let y = rng.random_range(0.0..(CANVAS_HEIGHT as f32 - BUTTON_HEIGHT));
             let rect = Rectangle {
                 x,
                 y,
@@ -91,7 +98,7 @@ pub(crate) fn update(gui: &mut GuiEnvironment, message: Message) {
             }
         }
         Message::EditSettings => {
-            println!("Edit Settings clicked!");
+            todo!();
         }
         Message::CanvasClicked(point) => {
             if gui.collecting {
@@ -109,61 +116,79 @@ pub(crate) fn update(gui: &mut GuiEnvironment, message: Message) {
 }
 
 /// View function: produces the widget tree from the current state.
-pub(crate) fn view(gui: &GuiEnvironment) -> Element<Message> {
+pub(crate) fn view(gui: &GuiEnvironment) -> Element<'_, Message> {
     let canvas = Canvas::new(GameCanvas {
         game_buttons: gui.game_buttons.clone(),
-        cache: gui.canvas_cache,
+        cache: gui.canvas_cache.clone(),
     })
-    .width(Length::Fixed(CANVAS_WIDTH as f32))
-    .height(Length::Fixed(CANVAS_HEIGHT as f32))
-    .on_event(|event, _bounds, cursor| match event {
-        Event::Mouse(iced::mouse::Event::ButtonPressed(_Left)) => {
-            if let Some(cursor_position) = cursor {
-                Status::Captured(Message::CanvasClicked(cursor_position))
-            } else {
-                Status::Ignored
-            }
-        }
-        _ => Status::Ignored,
-    });
+    .width(Length::Fill)
+    .height(Length::Fill);
 
     let start_stop_label = if gui.collecting {
         "Stop Collecting"
     } else {
         "Start Collecting"
     };
-    let hotbar = row![
-        button(start_stop_label).on_press(Message::ToggleCollecting),
-        button("Edit Settings").on_press(Message::EditSettings)
-    ]
-    .spacing(20)
-    .padding(10)
-    .align_y(Alignment::Center);
+    
+    let start_stop_button = button(start_stop_label)
+        .on_press(Message::ToggleCollecting)
+        .style(HotbarButton::style(
+            HotbarButton { theme: &THEME },
+            buttonStatus::Active,
+        ));
 
-    let content = column![canvas, hotbar]
+    let settings_button = button("Edit Settings")
+        .on_press(Message::EditSettings)
+        .style(HotbarButton::style(
+            HotbarButton { theme: &THEME },
+            buttonStatus::Active,
+        ));
+
+    let vertical_divider = container("")
+        .width(Length::FillPortion(1))
+        .height(Length::Fill)
+        .style(DividerStyle::style(DividerStyle { theme: &THEME }));
+
+    let hotbar_row = row![start_stop_button, vertical_divider, settings_button]
         .spacing(10)
-        .align_x(Alignment::Center);
+        .padding(10)
+        .align_y(Alignment::Center);
+
+    let hotbar = container(hotbar_row).width(Length::Fill)
+        .style(HotbarStyle::style(HotbarStyle { theme: &THEME }));
+    
+    let horizontal_divider = container("")
+        .height(Length::FillPortion(1))
+        .width(Length::Fill)
+        .style(DividerStyle::style(DividerStyle { theme: &THEME }));
+
+    let content = column![canvas, horizontal_divider, hotbar]
+        .width(Length::Fill)
+        .height(Length::Fill);
 
     container(content)
         .width(Length::Fill)
         .height(Length::Fill)
-        .center_x()
-        .center_y()
         .into()
 }
 
-/// Custom canvas program for rendering game buttons.
-struct GameCanvas {
+/// The canvas for the game buttons.
+struct GameCanvas<R>
+where
+    R: geometry::Renderer,
+{
     game_buttons: Vec<GameButton>,
-    cache: Cache,
+    cache: Rc<Cache<R>>,
 }
 
-impl<Message, Theme, Renderer> canvas::Program<Message, Theme, Renderer> for GameCanvas
+/// The canvas program.
+impl<Message, Theme, R> canvas::Program<Message, Theme, R> for GameCanvas<R>
 where
-    Renderer: geometry::Renderer,
+    R: geometry::Renderer,
 {
     type State = ();
 
+    /// Initializes the canvas.
     fn update(
         &self,
         _state: &mut Self::State,
@@ -174,17 +199,19 @@ where
         (Status::Ignored, None)
     }
 
+    /// Draws the canvas.
     fn draw(
         &self,
         _state: &Self::State,
-        _renderer: &Renderer,
+        renderer: &R,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
-    ) -> Vec<Geometry<Renderer>> {
+    ) -> Vec<R::Geometry> {
+        // The cache draws using the provided renderer and closure.
         let geometry = self
             .cache
-            .draw(_renderer, bounds.size(), |frame: &mut Frame| {
+            .draw(renderer, bounds.size(), |frame: &mut Frame<R>| {
                 for button in &self.game_buttons {
                     let path = Path::rectangle(
                         Point::new(button.rect.x, button.rect.y),
@@ -192,11 +219,11 @@ where
                     );
                     frame.fill(&path, Color::from_rgb(0.2, 0.7, 0.3));
                     let text_position = Point::new(
-                        button.rect.x + button.rect.width / 4.0,
+                        button.rect.x + button.rect.width / 2.0,
                         button.rect.y + button.rect.height / 2.0,
                     );
                     frame.fill_text(Text {
-                        content: "Button".into(),
+                        content: "Click me!".into(),
                         position: text_position,
                         color: Color::WHITE,
                         size: Pixels::from(20.0),
@@ -207,6 +234,7 @@ where
         vec![geometry]
     }
 
+    /// Returns the mouse interaction for the canvas.
     fn mouse_interaction(
         &self,
         _state: &Self::State,

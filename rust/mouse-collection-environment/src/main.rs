@@ -1,13 +1,16 @@
-use iced::Theme;
+use iced::{Theme};
 
 mod mouse_collector;
-mod mouse_gui;
+mod gui {
+    pub(crate) mod mouse_gui;
+    mod stylesheet;
+}
 
 fn main() {
     iced::application(
         "Mouse Collection Environment",
-        mouse_gui::update,
-        mouse_gui::view,
+        gui::mouse_gui::update,
+        gui::mouse_gui::view,
     )
     .theme(|_| Theme::Dark)
     .centered()

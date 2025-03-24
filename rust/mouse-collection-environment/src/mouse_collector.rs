@@ -1,6 +1,12 @@
-//!
-//!
-//!
+/*!
+# Mouse Collector Module
+
+This module implements a comprehensive mouse event collector for capturing, processing,
+and recording mouse movements, clicks, and scroll events. It gathers raw data,
+computes derived metrics (such as velocity, acceleration, jerk, smoothness, and Fitts's indices),
+and exports the results to a CSV file for further analysis. The design leverages both
+asynchronous tasks (via Tokio) and multi-threading (via std::thread) and handles window events using the `winit` crate.
+*/
 
 use chrono::{DateTime, Local};
 use std::fmt;
@@ -18,8 +24,10 @@ use winit::event::{MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+/// Constant for the directory in which data files (CSV) will be stored.
 const DATA_DIR: &str = "data";
 
+/// Enum representing the various mouse click events that can be detected.
 #[derive(Clone)]
 enum ClickEvent {
     Left,
@@ -28,7 +36,9 @@ enum ClickEvent {
     None,
 }
 
+/// Implements the Display trait for `ClickEvent` for human-readable formatting.
 impl fmt::Display for ClickEvent {
+    /// Formats the click event into a human-readable string.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = match self {
             ClickEvent::Left => "Left",
@@ -40,6 +50,7 @@ impl fmt::Display for ClickEvent {
     }
 }
 
+/// Enum representing the scroll events (up or down) that may occur.
 #[derive(Clone)]
 enum ScrollEvent {
     Up,
@@ -47,7 +58,9 @@ enum ScrollEvent {
     None,
 }
 
+/// Implements the Display trait for `ScrollEvent` for human-readable formatting.
 impl fmt::Display for ScrollEvent {
+    /// Formats the scroll event into a human-readable string.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = match self {
             ScrollEvent::Up => "Up",
@@ -58,8 +71,10 @@ impl fmt::Display for ScrollEvent {
     }
 }
 
+/// Type alias for a coordinate represented as a tuple (x, y) of f64 values.
 type Coordinate = (f64, f64);
 
+/// Structure capturing attributes directly related to mouse movement.
 #[derive(Clone)]
 struct MouseMovementAttributes {
     mouse_dpi: usize,
@@ -74,6 +89,7 @@ struct MouseMovementAttributes {
     jerk: f64,
 }
 
+/// Structure capturing temporal aspects of mouse events.
 #[derive(Clone)]
 struct TemporalAttributes {
     timestamp: SystemTime,
@@ -82,12 +98,14 @@ struct TemporalAttributes {
     hover_time: f64,
 }
 
+/// Structure capturing behavioral aspects such as click and scroll events.
 #[derive(Clone)]
 struct BehavioralAttributes {
     click_events: ClickEvent,
     scroll_events: ScrollEvent,
 }
 
+/// Structure aggregating raw collected data from mouse events, including temporal, movement, and behavioral attributes.
 #[derive(Clone)]
 struct CollectedData {
     temporal_attributes: TemporalAttributes,
@@ -95,6 +113,7 @@ struct CollectedData {
     behavioral_attributes: BehavioralAttributes,
 }
 
+/// Structure holding derived attributes computed from the raw mouse event data.
 #[derive(Clone, Default)]
 struct DerivedAttributes {
     average_velocity: f64,
@@ -110,16 +129,20 @@ struct DerivedAttributes {
     fitts_movement_time: f64,
 }
 
+/// Structure acting as a buffer for storing collected mouse event data.
 #[derive(Default)]
 struct CollectionBuffer {
     collected_data: Vec<CollectedData>,
 }
 
+/// Structure for holding the latest derivation report containing computed mouse metrics.
 #[derive(Default)]
 struct DerivationReport {
     report: DerivedAttributes,
 }
 
+/// The main struct managing mouse event collection, processing, and recording.
+/// It holds buffers, configuration, and handles to asynchronous and threaded tasks.
 pub struct MouseCollector {
     pub record_filename: Arc<RwLock<String>>,
     collection_buffer: Arc<TokioRwLock<CollectionBuffer>>,
@@ -132,6 +155,14 @@ pub struct MouseCollector {
 }
 
 impl MouseCollector {
+    /// Creates a new `MouseCollector` instance and, if requested, starts the collection processes.
+    ///
+    /// # Parameters
+    /// - `start`: Indicates whether collection should begin immediately.
+    /// - `init_cmd_reporting`: Specifies if command-line reporting should be initialized.
+    ///
+    /// # Returns
+    /// An `Arc`-wrapped instance of `MouseCollector`.
     pub async fn new(start: bool, init_cmd_reporting: bool) -> Arc<Self> {
         let record_filename = Arc::new(RwLock::new("data.csv".to_string()));
 
@@ -174,6 +205,13 @@ impl MouseCollector {
         mouse_collector
     }
 
+    /// Initiates the collection process by starting event listening, recording, and (optionally) command-line reporting.
+    ///
+    /// # Parameters
+    /// - `report`: Determines whether command-line reporting should be started.
+    ///
+    /// # Returns
+    /// A tuple containing optional handles for the listening task, recording thread, and reporting task.
     pub async fn start_collecting(
         self: Arc<Self>,
         report: bool,
@@ -208,6 +246,7 @@ impl MouseCollector {
         )
     }
 
+    /// Stops all collection processes by aborting asynchronous tasks and joining the recording thread.
     pub async fn stop_collecting(&mut self) {
         if let Some(handle) = &self.listening_handle.lock().await.take() {
             handle.abort();
@@ -218,6 +257,10 @@ impl MouseCollector {
         }
     }
 
+    /// Appends new mouse event data to the collection buffer.
+    ///
+    /// # Parameters
+    /// - `data`: A vector of `CollectedData` to be added.
     fn append_new_collection(&self, data: &Vec<CollectedData>) {
         tokio::runtime::Handle::current().block_on(async {
             self.collection_buffer
@@ -228,6 +271,10 @@ impl MouseCollector {
         });
     }
 
+    /// Retrieves the current mouse event collection from the buffer.
+    ///
+    /// # Returns
+    /// An optional vector of `CollectedData` representing the current buffer contents.
     fn get_current_collection(&self) -> Option<Vec<CollectedData>> {
         Some(
             tokio::runtime::Handle::current()
@@ -236,10 +283,31 @@ impl MouseCollector {
     }
 }
 
+/// Trait defining the interface for recording mouse events and processing the collected data.
 trait MouseRecorder {
+    /// Continuously records mouse events and processes the data.
     fn mouse_recorder(&self);
+    /// Calculates movement attributes (e.g., velocity, acceleration) from raw collected data.
+    ///
+    /// # Parameters
+    /// - `data`: A slice of raw `CollectedData`.
+    ///
+    /// # Returns
+    /// A vector of `CollectedData` with updated movement metrics.
     fn calculate_collection_attributes(&self, data: &[CollectedData]) -> Vec<CollectedData>;
+    /// Computes derived attributes such as averages, peaks, and smoothness metrics.
+    ///
+    /// # Parameters
+    /// - `data`: A slice of processed `CollectedData`.
+    ///
+    /// # Returns
+    /// A vector of `DerivedAttributes` corresponding to each processed event.
     fn calculate_derived_attributes(&self, data: &[CollectedData]) -> Vec<DerivedAttributes>;
+    /// Writes the collected and computed mouse event data to a CSV file.
+    ///
+    /// # Parameters
+    /// - `collection`: Processed mouse event data.
+    /// - `derivations`: Derived metrics corresponding to the mouse data.
     fn write_data_to_csv(
         &self,
         collection: Vec<CollectedData>,
@@ -248,18 +316,17 @@ trait MouseRecorder {
 }
 
 impl MouseRecorder for MouseCollector {
+    /// Implements continuous mouse data recording. When a threshold is met, processes the data,
+    /// writes results to CSV, and clears processed events from the buffer.
     fn mouse_recorder(&self) {
         loop {
             if let Some(data) = self.get_current_collection() {
                 let current_timestamp: SystemTime = SystemTime::now();
-                if data.len() > 1000 {
-                    // calculate data values
+                if data.len() > 1 {
                     let collection_data_vec = Self::calculate_collection_attributes(self, &data);
                     let derived_data =
                         Self::calculate_derived_attributes(self, &collection_data_vec);
-                    // write data to csv
                     Self::write_data_to_csv(self, collection_data_vec, derived_data);
-                    // clear all data older than current_timestamp
                     tokio::runtime::Handle::current().block_on(async {
                         self.collection_buffer
                             .write()
@@ -276,6 +343,14 @@ impl MouseRecorder for MouseCollector {
         }
     }
 
+    /// Processes raw mouse data to calculate movement metrics such as delta, distance, velocity,
+    /// acceleration, jerk, and hover time.
+    ///
+    /// # Parameters
+    /// - `data`: A slice of raw `CollectedData`.
+    ///
+    /// # Returns
+    /// A vector of updated `CollectedData` with computed movement attributes.
     fn calculate_collection_attributes(&self, data: &[CollectedData]) -> Vec<CollectedData> {
         let length: i32 = data.iter().len() as i32;
         if length <= 1 {
@@ -363,6 +438,14 @@ impl MouseRecorder for MouseCollector {
         updated_data
     }
 
+    /// Computes derived attributes including average and peak velocity, acceleration,
+    /// smoothness, and Fitts's metrics based on the processed mouse event data.
+    ///
+    /// # Parameters
+    /// - `data`: A slice of processed `CollectedData`.
+    ///
+    /// # Returns
+    /// A vector of `DerivedAttributes` for each event.
     fn calculate_derived_attributes(&self, data: &[CollectedData]) -> Vec<DerivedAttributes> {
         let length = data.len();
         let mut derived_results: Vec<DerivedAttributes> = Vec::with_capacity(length);
@@ -445,6 +528,11 @@ impl MouseRecorder for MouseCollector {
         derived_results
     }
 
+    /// Writes the processed mouse event data and its derived attributes to a CSV file.
+    ///
+    /// # Parameters
+    /// - `collection`: The processed mouse event data.
+    /// - `derivations`: The corresponding derived metrics.
     fn write_data_to_csv(
         &self,
         collection: Vec<CollectedData>,
@@ -458,7 +546,6 @@ impl MouseRecorder for MouseCollector {
         let mut writer: csv::Writer<File> = csv::Writer::from_writer(
             File::create(PathBuf::from(DATA_DIR).join("data.csv")).unwrap(),
         );
-        // append header
         writer
             .write_record([
                 "timestamp",
@@ -484,7 +571,6 @@ impl MouseRecorder for MouseCollector {
             ])
             .unwrap();
 
-        // write all data arguments
         for (data, derived) in collection.iter().zip(derivations.iter()) {
             writer
                 .write_record(&[
@@ -517,11 +603,14 @@ impl MouseRecorder for MouseCollector {
     }
 }
 
+/// Trait for outputting derived mouse metrics to the command line.
 trait CommandlineOutput {
+    /// Outputs a report of the derived attributes to the command line.
     async fn cmd_report(&self);
 }
 
 impl CommandlineOutput for MouseCollector {
+    /// Prints computed mouse metrics (velocity, acceleration, smoothness, etc.) to standard output.
     async fn cmd_report(&self) {
         let derived_attributes = &self.derivation_report.read().await;
         let derived_report = &derived_attributes.report;
@@ -552,11 +641,14 @@ impl CommandlineOutput for MouseCollector {
     }
 }
 
+/// Trait for asynchronously listening to mouse events.
 trait MouseListener {
+    /// Asynchronously listens for mouse events and routes them to the collector.
     async fn mouse_listener(self: Arc<Self>);
 }
 
 impl MouseListener for MouseCollector {
+    /// Spawns a blocking task to run the mouse listener using the `winit` event loop.
     async fn mouse_listener(self: Arc<Self>) {
         let collector = self.clone();
 
@@ -573,12 +665,16 @@ impl MouseListener for MouseCollector {
     }
 }
 
+/// Structure representing the application that handles mouse events.
+/// Contains a reference to the main mouse collector and an optional window.
 struct MouseApp<'a> {
     collector: &'a MouseCollector,
     window: Option<Window>,
 }
 
+/// Implements the `ApplicationHandler` trait for `MouseApp` to handle window-related events.
 impl ApplicationHandler<()> for MouseApp<'_> {
+    /// Called when the application is resumed; creates a window for event capture.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.window = Some(
             event_loop
@@ -587,6 +683,7 @@ impl ApplicationHandler<()> for MouseApp<'_> {
         );
     }
 
+    /// Handles window events (cursor movements, mouse clicks, mouse wheel) and buffers the collected data.
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -599,7 +696,7 @@ impl ApplicationHandler<()> for MouseApp<'_> {
         let mut last_position: Option<Coordinate> = None;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let current_timestamp = SystemTime::now();
+                let current_timestamp: SystemTime = SystemTime::now();
                 let coord: Coordinate = (position.x, position.y);
                 last_position = Some(coord);
                 let movement_delta: Coordinate = (
@@ -642,8 +739,8 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                 button,
                 ..
             } => {
-                let current_timestamp = SystemTime::now();
-                let click_event = match button {
+                let current_timestamp: SystemTime = SystemTime::now();
+                let click_event: ClickEvent = match button {
                     MouseButton::Left => ClickEvent::Left,
                     MouseButton::Right => ClickEvent::Right,
                     MouseButton::Middle => ClickEvent::Middle,
@@ -681,8 +778,8 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let current_timestamp: time::SystemTime = time::SystemTime::now();
-                let scroll_event = match delta {
+                let current_timestamp: SystemTime = SystemTime::now();
+                let scroll_event: ScrollEvent = match delta {
                     MouseScrollDelta::LineDelta(_, y) => {
                         if y > 0.0 {
                             ScrollEvent::Up
