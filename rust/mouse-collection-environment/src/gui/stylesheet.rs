@@ -1,8 +1,9 @@
-use iced::Theme;
+use iced::border::Radius;
 use iced::theme::palette::Extended;
 use iced::widget::button::{Status, Style as ButtonStyle};
 use iced::widget::container::Style as ContainerStyle;
-use iced_style::container::{Appearance, StyleSheet};
+use iced::{Background, Border, Color, Shadow, Theme, Vector};
+use iced_style::container::StyleSheet;
 
 #[derive(Debug)]
 pub struct HotbarButton<'a> {
@@ -12,28 +13,37 @@ pub struct HotbarButton<'a> {
 impl<'a> HotbarButton<'a> {
     /// Returns a closure that maps a button status to a style.
     pub fn style(self, _status: Status) -> impl Fn(&Theme, Status) -> ButtonStyle + use<'a> {
-        let theme: &Theme = self.theme;
-        let palette: &Extended = theme.extended_palette();
-
         move |_theme: &Theme, _status: Status| -> ButtonStyle {
             match _status {
                 Status::Active | Status::Pressed => ButtonStyle {
-                    background: None,
-                    text_color: Default::default(),
-                    border: Default::default(),
-                    shadow: Default::default(),
+                    background: Some(Background::Color(Color::from_rgb(0.6, 0.6, 0.6))),
+                    text_color: Color::BLACK,
+                    border: Border {
+                        width: 1.0,
+                        color: Color::BLACK,
+                        radius: Radius::default(),
+                    },
+                    shadow: Shadow {
+                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+                        offset: Vector::new(1.0, 1.0),
+                        blur_radius: 2.0,
+                    },
                 },
                 Status::Hovered => ButtonStyle {
-                    background: None,
-                    text_color: palette.background.base.text.scale_alpha(0.8),
-                    border: Default::default(),
-                    shadow: Default::default(),
+                    background: Some(Background::Color(Color::from_rgb(0.7, 0.7, 0.7))),
+                    text_color: Color::BLACK,
+                    border: Border {
+                        width: 1.0,
+                        color: Color::BLACK,
+                        radius: Radius::default(),
+                    },
+                    shadow: Shadow::default(),
                 },
                 Status::Disabled => ButtonStyle {
-                    background: None,
-                    text_color: palette.background.base.text.scale_alpha(0.5),
-                    border: Default::default(),
-                    shadow: Default::default(),
+                    background: Some(Background::Color(Color::from_rgb(0.5, 0.5, 0.5))),
+                    text_color: Color::from_rgb(0.4, 0.4, 0.4),
+                    border: Border::default(),
+                    shadow: Shadow::default(),
                 },
             }
         }
@@ -51,9 +61,13 @@ impl<'b> HotbarStyle<'b> {
         move |_theme: &Theme| -> ContainerStyle {
             ContainerStyle {
                 text_color: None,
-                background: None,
-                border: Default::default(),
-                shadow: Default::default(),
+                background: Some(Background::Color(Color::from_rgb(0.85, 0.85, 0.85))),
+                border: Border {
+                    width: 1.0,
+                    color: Color::BLACK,
+                    radius: Radius::default(),
+                },
+                shadow: Shadow::default(),
             }
         }
     }
@@ -70,9 +84,9 @@ impl<'c> DividerStyle<'c> {
         move |_theme: &Theme| -> ContainerStyle {
             ContainerStyle {
                 text_color: None,
-                background: None,
-                border: Default::default(),
-                shadow: Default::default(),
+                background: Some(Background::Color(Color::BLACK)),
+                border: Border::default(),
+                shadow: Shadow::default(),
             }
         }
     }

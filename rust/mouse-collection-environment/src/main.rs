@@ -1,4 +1,4 @@
-use iced::{Theme};
+use iced::Theme;
 
 mod mouse_collector;
 mod gui {

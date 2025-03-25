@@ -12,17 +12,19 @@ use rand::Rng;
 use rand::prelude::ThreadRng;
 use std::rc::Rc;
 
+pub(crate) const THEME: Theme = Theme::Dark;
+
 const CANVAS_WIDTH: u32 = 900;
 const CANVAS_HEIGHT: u32 = 900;
 const BUTTON_WIDTH: f32 = 100.0;
 const BUTTON_HEIGHT: f32 = 50.0;
 
-pub(crate) const THEME: Theme = Theme::Dark;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     ToggleCollecting,
     EditSettings,
+    ViewAnalytics,
     CanvasClicked(Point),
 }
 
@@ -100,6 +102,9 @@ pub(crate) fn update(gui: &mut GuiEnvironment, message: Message) {
         Message::EditSettings => {
             todo!();
         }
+        Message::ViewAnalytics => {
+            todo!();
+        }
         Message::CanvasClicked(point) => {
             if gui.collecting {
                 for button in &gui.game_buttons {
@@ -129,7 +134,7 @@ pub(crate) fn view(gui: &GuiEnvironment) -> Element<'_, Message> {
     } else {
         "Start Collecting"
     };
-    
+
     let start_stop_button = button(start_stop_label)
         .on_press(Message::ToggleCollecting)
         .style(HotbarButton::style(
@@ -137,28 +142,37 @@ pub(crate) fn view(gui: &GuiEnvironment) -> Element<'_, Message> {
             buttonStatus::Active,
         ));
 
-    let settings_button = button("Edit Settings")
-        .on_press(Message::EditSettings)
+    let settings_button =
+        button("Settings")
+            .on_press(Message::EditSettings)
+            .style(HotbarButton::style(
+                HotbarButton { theme: &THEME },
+                buttonStatus::Active,
+            ));
+
+    let analytics_button = button("View Analytics")
+        .on_press(Message::ViewAnalytics)
         .style(HotbarButton::style(
             HotbarButton { theme: &THEME },
             buttonStatus::Active,
         ));
 
     let vertical_divider = container("")
-        .width(Length::FillPortion(1))
+        .width(Length::Fill)
         .height(Length::Fill)
         .style(DividerStyle::style(DividerStyle { theme: &THEME }));
 
-    let hotbar_row = row![start_stop_button, vertical_divider, settings_button]
+    let hotbar_row = row![start_stop_button, vertical_divider, settings_button, analytics_button]
         .spacing(10)
         .padding(10)
         .align_y(Alignment::Center);
 
-    let hotbar = container(hotbar_row).width(Length::Fill)
+    let hotbar = container(hotbar_row)
+        .width(Length::Fill)
         .style(HotbarStyle::style(HotbarStyle { theme: &THEME }));
-    
+
     let horizontal_divider = container("")
-        .height(Length::FillPortion(1))
+        .height(Length::Fill)
         .width(Length::Fill)
         .style(DividerStyle::style(DividerStyle { theme: &THEME }));
 
