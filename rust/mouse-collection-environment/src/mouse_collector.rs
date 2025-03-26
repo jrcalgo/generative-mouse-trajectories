@@ -670,17 +670,6 @@ impl MouseListener for MouseCollector {
 struct MouseApp<'a> {
     collector: &'a MouseCollector,
     window: Option<Window>,
-    buffer: Vec<CollectedData>,
-}
-
-impl MouseApp<'_> {
-    fn new() -> Self {
-        MouseApp {
-            collector: &MouseCollector::new(),
-            window: None,
-            buffer: Vec::new(),
-        }
-    }
 }
 
 /// Implements the `ApplicationHandler` trait for `MouseApp` to handle window-related events.
@@ -703,7 +692,7 @@ impl ApplicationHandler<()> for MouseApp<'_> {
     ) {
         const MAX_BUFFER_SIZE: usize = 50000;
         const MIN_PROCESSING_SIZE: usize = MAX_BUFFER_SIZE / 2;
-        self.buffer: Vec<CollectedData> = Vec::with_capacity(MAX_BUFFER_SIZE);
+        let mut buffer: Vec<CollectedData> = Vec::with_capacity(MAX_BUFFER_SIZE);
         let mut last_position: Option<Coordinate> = None;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
