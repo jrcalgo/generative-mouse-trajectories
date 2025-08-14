@@ -1,14 +1,14 @@
 [package]
 name = "mouse-collection-environment"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["jrcalgo <jacksonr121@outlook.com>"]
 edition = "2024"
-description = "Collection environment for harvesting user mouse data"
+description = "Collection GUI environment for harvesting user mouse data"
 repository = "https://github.com/jrcalgo/generative-mouse-trajectories"
 documentation = "https://docs.rs/crate/mouse-collection-environment"
 readme = "README.md"
-keywords = ['collection', 'mouse-data', 'mouse-trajectories', 'environment']
-categories = ['accessibility', 'development-tools']
+keywords = ['mouse', 'input', 'telemetry', 'data-collection', 'analytics']
+categories = ['gui', 'visualization', 'accessibility', 'development-tools']
 license = "MIT"
 
 [dependencies]
@@ -16,11 +16,11 @@ tokio = { version = "1.44.1", features = ["full"] }
 winit = "0.30.9"
 iced = { version = "0.13.1", features = ["canvas"]}
 iced_graphics = "0.13.0"
-iced_native = "0.10.3"
 iced_style = "0.12.1"
 rand = "0.9.0"
 csv = "1.3.1"
 chrono = "0.4.40"
+once_cell = "1.19.0"
 
 [profile.release]
 opt-level = 1

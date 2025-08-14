@@ -91,3 +91,22 @@ impl<'c> DividerStyle<'c> {
         }
     }
 }
+
+/// Custom container style for the main game/canvas area.
+#[derive(Debug, Clone, Copy)]
+pub struct GameAreaStyle<'d> {
+    pub(crate) theme: &'d Theme,
+}
+
+impl<'d> GameAreaStyle<'d> {
+    pub fn style(self) -> impl Fn(&Theme) -> ContainerStyle + use<'d> {
+        move |_theme: &Theme| -> ContainerStyle {
+            ContainerStyle {
+                text_color: None,
+                background: Some(Background::Color(Color::from_rgb(0.18, 0.18, 0.18))),
+                border: Border::default(),
+                shadow: Shadow::default(),
+            }
+        }
+    }
+}
