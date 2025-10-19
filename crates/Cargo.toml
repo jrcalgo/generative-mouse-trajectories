@@ -1,0 +1,2 @@
+[workspace]
+members = ["mouse-collection-environment", "mouse-collector"]
