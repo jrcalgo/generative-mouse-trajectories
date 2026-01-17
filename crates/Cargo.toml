@@ -1,2 +1,2 @@
 [workspace]
-members = ["mouse-collection-environment", "mouse-collector"]
+members = ["mouse-collection-environment", "mouse-telemetry"]

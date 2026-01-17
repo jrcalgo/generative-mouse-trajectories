@@ -1,4 +1,6 @@
-## mouse-collector
+## mouse-telemetry
+
+**DISCLAIMER: This is intended for benevolent analytics and machine learning tasks; Do NOT use this for nefarious purposes**
 
 High-fidelity mouse telemetry collector for Rust. Captures cursor movement, clicks, and scrolls; computes derived kinematics (velocity, acceleration, jerk, smoothness, Fitts-style indices); and writes everything to CSV for analysis.
 
@@ -160,5 +162,5 @@ All numeric values are floating-point unless noted. Units: time in seconds, posi
 - **Nothing is recorded in listener mode**: Make sure the spawned window is focused and your cursor is inside it.
 
 ## License
-MIT
+[MIT](LICENSE)
 

@@ -86,7 +86,6 @@ type Coordinate = (f64, f64);
 /// Structure capturing attributes directly related to mouse movement.
 #[derive(Clone)]
 struct MouseMovementAttributes {
-    mouse_dpi: usize,
     current_position: Coordinate,
     movement_delta: Coordinate,
     distance_traveled: f64,
@@ -94,7 +93,6 @@ struct MouseMovementAttributes {
     direction_angles: f64,
     velocity: f64,
     acceleration: f64,
-    curvature: f64,
     jerk: f64,
 }
 
@@ -150,6 +148,12 @@ struct DerivationReport {
     report: DerivedAttributes,
 }
 
+type SyncHandle = Option<JoinHandle<()>>;
+type TokioHandle = Option<task::JoinHandle<()>>;
+
+type SyncHandleRef<'a> = Option<&'a JoinHandle<()>>;
+type TokioHandleRef<'a> = Option<&'a task::JoinHandle<()>>;
+
 /// The main struct managing mouse event collection, processing, and recording.
 /// It holds buffers, configuration, and handles to asynchronous and threaded tasks.
 pub struct MouseCollector {
@@ -158,9 +162,9 @@ pub struct MouseCollector {
     derivation_report: Arc<TokioRwLock<DerivationReport>>,
     pub start_timestamp: Option<time::SystemTime>,
     pub last_left_click_timestamp: Option<time::SystemTime>,
-    pub listening_handle: TokioMutex<Option<task::JoinHandle<()>>>,
-    pub reporting_handle: TokioMutex<Option<task::JoinHandle<()>>>,
-    pub recording_handle: Mutex<Option<JoinHandle<()>>>,
+    pub listening_handle: TokioMutex<TokioHandle>,
+    pub reporting_handle: TokioMutex<TokioHandle>,
+    pub recording_handle: Mutex<SyncHandle>,
     pub data_dir: Arc<RwLock<String>>,
     // Tunables
     min_derivative_dt: Arc<RwLock<f64>>,
@@ -206,28 +210,28 @@ impl MouseCollector {
         if start {
             let collector_clone: Arc<MouseCollector> = mouse_collector.clone();
             let handlers: (
-                Option<task::JoinHandle<()>>,
-                Option<JoinHandle<()>>,
-                Option<task::JoinHandle<()>>,
+                TokioHandle,
+                SyncHandle,
+                TokioHandle,
             ) = Self::start_collecting(collector_clone, init_cmd_reporting).await;
 
-            let mut listening_handle: Option<&tokio::task::JoinHandle<()>> =
+            let mut _listening_handle: TokioHandleRef =
                 mouse_collector.listening_handle.lock().await.as_ref();
-            let mut recording_handle: Option<&JoinHandle<()>> =
+            let mut _recording_handle: SyncHandleRef =
                 mouse_collector.recording_handle.lock().unwrap().as_ref();
-            let mut reporting_handle: Option<&tokio::task::JoinHandle<()>> =
+            let mut _reporting_handle: TokioHandleRef =
                 mouse_collector.reporting_handle.lock().await.as_ref();
 
-            listening_handle = handlers.0.as_ref();
-            recording_handle = handlers.1.as_ref();
-            reporting_handle = handlers.2.as_ref();
+            _listening_handle = handlers.0.as_ref();
+            _recording_handle = handlers.1.as_ref();
+            _reporting_handle = handlers.2.as_ref();
         }
 
         mouse_collector
     }
 
     /// Build a unique default record filename in the provided directory.
-    fn generate_unique_record_filename(base_dir: &PathBuf) -> String {
+    fn generate_unique_record_filename(base_dir: &std::path::Path) -> String {
         let now: DateTime<Local> = Local::now();
         let dt = now.format("%Y%m%d_%H%M%S").to_string();
         let mut name = format!("mouse_data_{}.csv", dt);
@@ -305,17 +309,6 @@ impl MouseCollector {
         });
     }
 
-    /// Retrieves the current mouse event collection from the buffer.
-    ///
-    /// # Returns
-    /// An optional vector of `CollectedData` representing the current buffer contents.
-    fn get_current_collection(&self) -> Option<Vec<CollectedData>> {
-        Some(
-            tokio::runtime::Handle::current()
-                .block_on(async { self.collection_buffer.read().await.collected_data.clone() }),
-        )
-    }
-
     /// Returns a formatted, human-readable snapshot of the latest derived metrics.
     /// Intended for real-time GUI display in the hotbar.
     pub fn get_latest_derived_summary(&self) -> String {
@@ -364,7 +357,6 @@ impl MouseCollector {
                 hover_time: 0.0,
             },
             mouse_attributes: MouseMovementAttributes {
-                mouse_dpi: 0,
                 current_position: position,
                 movement_delta: (0.0, 0.0),
                 distance_traveled: 0.0,
@@ -372,7 +364,6 @@ impl MouseCollector {
                 direction_angles: 0.0,
                 velocity: 0.0,
                 acceleration: 0.0,
-                curvature: 0.0,
                 jerk: 0.0,
             },
             behavioral_attributes: BehavioralAttributes {
@@ -394,7 +385,6 @@ impl MouseCollector {
                 hover_time: 0.0,
             },
             mouse_attributes: MouseMovementAttributes {
-                mouse_dpi: 0,
                 current_position: position,
                 movement_delta: (0.0, 0.0),
                 distance_traveled: 0.0,
@@ -402,7 +392,6 @@ impl MouseCollector {
                 direction_angles: 0.0,
                 velocity: 0.0,
                 acceleration: 0.0,
-                curvature: 0.0,
                 jerk: 0.0,
             },
             behavioral_attributes: BehavioralAttributes {
@@ -566,8 +555,6 @@ impl MouseRecorder for MouseCollector {
 
         let mut updated_data: Vec<CollectedData> = Vec::with_capacity(length as usize);
         let mut cumulative_path_length: f64 = 0.0;
-        let mut previous_velocity: f64 = 0.0;
-        let mut previous_acceleration: f64 = 0.0;
         // Smoothed state
         let mut prev_velocity_smoothed: f64 = 0.0;
         let mut prev_acceleration_smoothed: f64 = 0.0;
@@ -656,8 +643,6 @@ impl MouseRecorder for MouseCollector {
                     new_event.temporal_attributes.hover_time = 0.0;
                 }
 
-                previous_velocity = velocity_smoothed;
-                previous_acceleration = acceleration_smoothed;
                 prev_velocity_smoothed = velocity_smoothed;
                 prev_acceleration_smoothed = acceleration_smoothed;
             }
@@ -819,8 +804,7 @@ impl MouseRecorder for MouseCollector {
         let need_header = std::fs::metadata(&file_path)
             .map(|m| m.len() == 0)
             .unwrap_or(true);
-        if need_header {
-            if let Err(e) = writer.write_record([
+        if need_header && let Err(e) = writer.write_record([
                 "timestamp",
                 "total_duration",
                 "time_between_movements",
@@ -851,7 +835,7 @@ impl MouseRecorder for MouseCollector {
                 );
                 return;
             }
-        }
+        
 
         for (data, derived) in collection.iter().zip(derivations.iter()) {
             if let Err(e) = writer.write_record(&[
@@ -977,8 +961,8 @@ impl ApplicationHandler<()> for MouseApp<'_> {
     /// Handles window events (cursor movements, mouse clicks, mouse wheel) and buffers the collected data.
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
+        _event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
         event: WindowEvent,
     ) {
         match event {
@@ -998,7 +982,6 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                         hover_time: 0.0,
                     },
                     mouse_attributes: MouseMovementAttributes {
-                        mouse_dpi: 0,
                         current_position: coord,
                         movement_delta,
                         distance_traveled: 0.0,
@@ -1006,7 +989,6 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                         direction_angles: 0.0,
                         velocity: 0.0,
                         acceleration: 0.0,
-                        curvature: 0.0,
                         jerk: 0.0,
                     },
                     behavioral_attributes: BehavioralAttributes {
@@ -1042,7 +1024,6 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                         hover_time: 0.0,
                     },
                     mouse_attributes: MouseMovementAttributes {
-                        mouse_dpi: 0,
                         current_position: current_coord,
                         movement_delta: (0.0, 0.0),
                         distance_traveled: 0.0,
@@ -1050,7 +1031,6 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                         direction_angles: 0.0,
                         velocity: 0.0,
                         acceleration: 0.0,
-                        curvature: 0.0,
                         jerk: 0.0,
                     },
                     behavioral_attributes: BehavioralAttributes {
@@ -1085,7 +1065,6 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                         hover_time: 0.0,
                     },
                     mouse_attributes: MouseMovementAttributes {
-                        mouse_dpi: 0,
                         current_position: current_coord,
                         movement_delta: (0.0, 0.0),
                         distance_traveled: 0.0,
@@ -1093,7 +1072,6 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                         direction_angles: 0.0,
                         velocity: 0.0,
                         acceleration: 0.0,
-                        curvature: 0.0,
                         jerk: 0.0,
                     },
                     behavioral_attributes: BehavioralAttributes {
