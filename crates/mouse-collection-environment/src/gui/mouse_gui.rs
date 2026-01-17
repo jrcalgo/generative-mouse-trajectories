@@ -5,8 +5,7 @@ use iced::widget::{Canvas, Space, button, canvas, column, container, row, text};
 use iced::{Alignment, Color, Element, Length, Pixels, Point, Rectangle, Size, Theme, mouse};
 
 use crate::gui::stylesheet::*;
-use crate::mouse_collector::MouseCollector;
-use iced_graphics::core::Widget;
+use mouse_telemetry::mouse_telemetry::MouseCollector;
 use iced_graphics::geometry;
 use rand::Rng;
 use rand::prelude::ThreadRng;
@@ -93,25 +92,6 @@ impl Default for GuiEnvironment {
 }
 
 impl GuiEnvironment {
-    pub fn new_with_collector(collector: Arc<MouseCollector>) -> Self {
-        Self {
-            collecting: false,
-            game_buttons: Vec::new(),
-            canvas_cache: Rc::new(Cache::new()),
-            collector: Some(collector.clone()),
-            canvas_size: Size::new(CANVAS_WIDTH as f32, CANVAS_HEIGHT as f32),
-            show_settings: false,
-            min_buttons: 3,
-            max_buttons: 6,
-            min_input: String::from("3"),
-            max_input: String::from("6"),
-            data_dir_input: collector.get_data_dir(),
-            hotbar_collapsed: false,
-            min_dt_input: format!("{:.4}", collector.get_min_derivative_dt()),
-            alpha_input: format!("{:.3}", collector.get_smoothing_alpha()),
-        }
-    }
-
     fn spawn_buttons(&mut self) {
         self.game_buttons.clear();
         let mut rng: ThreadRng = rand::rng();

@@ -124,4 +124,4 @@ Notes:
 - Batching: events are buffered in memory; once a Left click arrives, the batch up to and including that click is processed and appended to CSV.
 
 ## License
-MIT 
+[MIT](LICENSE)

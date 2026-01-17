@@ -1,6 +1,6 @@
 [package]
 name = "mouse-collection-environment"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["jrcalgo <jacksonr121@outlook.com>"]
 edition = "2024"
 description = "Collection GUI environment for harvesting user mouse data"
@@ -12,6 +12,8 @@ categories = ['gui', 'visualization', 'accessibility', 'development-tools']
 license = "MIT"
 
 [dependencies]
+mouse-telemetry = "0.2.0"
+
 tokio = { version = "1.44.1", features = ["full"] }
 winit = "0.30.9"
 iced = { version = "0.13.1", features = ["canvas"]}

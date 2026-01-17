@@ -1,6 +1,6 @@
 use iced::Theme;
+use mouse_telemetry::mouse_telemetry::MouseCollector;
 
-pub mod mouse_collector;
 mod gui {
     pub(crate) mod mouse_gui;
     mod stylesheet;
@@ -11,15 +11,15 @@ static COLLECTOR_RT: once_cell::sync::Lazy<tokio::runtime::Runtime> =
         tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime")
     });
 
-static COLLECTOR: once_cell::sync::Lazy<std::sync::Arc<mouse_collector::MouseCollector>> =
+static COLLECTOR: once_cell::sync::Lazy<std::sync::Arc<MouseCollector>> =
     once_cell::sync::Lazy::new(|| {
-        COLLECTOR_RT.block_on(mouse_collector::MouseCollector::new(false, false))
+        COLLECTOR_RT.block_on(MouseCollector::new(false, false))
     });
 
 fn main() {
     let _enter = COLLECTOR_RT.enter();
 
-    let _recording_handle = mouse_collector::MouseCollector::start_recording_thread(&COLLECTOR);
+    let _recording_handle = MouseCollector::start_recording_thread(&COLLECTOR);
 
     iced::application(
         "Mouse Collection Environment",
