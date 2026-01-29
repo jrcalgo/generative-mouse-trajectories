@@ -55,7 +55,7 @@ impl fmt::Display for ClickEvent {
             ClickEvent::Right => "Right",
             ClickEvent::None => "None",
         };
-        write!(f, "{}", output)
+        write!(f, "{output}")
     }
 }
 
@@ -76,7 +76,7 @@ impl fmt::Display for ScrollEvent {
             ScrollEvent::Down => "Down",
             ScrollEvent::None => "None",
         };
-        write!(f, "{}", output)
+        write!(f, "{output}")
     }
 }
 
@@ -234,10 +234,10 @@ impl MouseCollector {
     fn generate_unique_record_filename(base_dir: &std::path::Path) -> String {
         let now: DateTime<Local> = Local::now();
         let dt = now.format("%Y%m%d_%H%M%S").to_string();
-        let mut name = format!("mouse_data_{}.csv", dt);
+        let mut name = format!("mouse_data_{dt}.csv");
         let mut counter: usize = 1;
         while base_dir.join(&name).exists() {
-            name = format!("mouse_data_{}_{}.csv", dt, counter);
+            name = format!("mouse_data_{dt}_{counter}.csv");
             counter += 1;
         }
         name
@@ -299,13 +299,13 @@ impl MouseCollector {
     ///
     /// # Parameters
     /// - `data`: A vector of `CollectedData` to be added.
-    fn append_new_collection(&self, data: &Vec<CollectedData>) {
+    fn append_new_collection(&self, data: &[CollectedData]) {
         tokio::runtime::Handle::current().block_on(async {
             self.collection_buffer
                 .write()
                 .await
                 .collected_data
-                .append(&mut data.clone());
+                .append(&mut data.to_owned());
         });
     }
 
@@ -371,7 +371,7 @@ impl MouseCollector {
                 scroll_events: ScrollEvent::None,
             },
         };
-        self.append_new_collection(&vec![new_data]);
+        self.append_new_collection(&[new_data]);
     }
 
     /// Pushes a single left-click event into the internal buffer.
@@ -399,7 +399,7 @@ impl MouseCollector {
                 scroll_events: ScrollEvent::None,
             },
         };
-        self.append_new_collection(&vec![new_data]);
+        self.append_new_collection(&[new_data]);
     }
 
     /// Starts only the recording thread, without spawning a winit listener window.
@@ -682,12 +682,12 @@ impl MouseRecorder for MouseCollector {
         let mut cumulative_momentum: f64 = 0.0;
         let mut max_momentum: f64 = 0.0;
 
-        for i in 0..length {
+        for (i, data_element) in data.iter().enumerate().take(length) {
             let current_total_duration: f64 = data[i].temporal_attributes.total_duration;
             let mut derived: DerivedAttributes = DerivedAttributes::default();
 
             if i >= 1 {
-                let velocity: f64 = data[i].mouse_attributes.velocity;
+                let velocity: f64 = data_element.mouse_attributes.velocity;
                 cumulative_velocity += velocity;
                 if velocity > max_velocity {
                     max_velocity = velocity;
@@ -704,12 +704,12 @@ impl MouseRecorder for MouseCollector {
                 derived.average_momentum = cumulative_momentum / (i as f64);
                 derived.peak_momentum = max_momentum;
 
-                cumulative_active_time += data[i].temporal_attributes.time_between_movements;
+                cumulative_active_time += data_element.temporal_attributes.time_between_movements;
                 derived.idle_time = current_total_duration - cumulative_active_time;
             }
 
             if i >= 2 {
-                let acceleration: f64 = data[i].mouse_attributes.acceleration;
+                let acceleration: f64 = data_element.mouse_attributes.acceleration;
                 cumulative_acceleration += acceleration;
                 if acceleration > max_acceleration {
                     max_acceleration = acceleration;
@@ -719,7 +719,7 @@ impl MouseRecorder for MouseCollector {
             }
 
             if i >= 3 {
-                cumulative_jerk += data[i].mouse_attributes.jerk.abs();
+                cumulative_jerk += data_element.mouse_attributes.jerk.abs();
                 jerk_count += 1;
                 let avg_jerk = if jerk_count > 0 {
                     cumulative_jerk / (jerk_count as f64)
@@ -729,12 +729,12 @@ impl MouseRecorder for MouseCollector {
                 derived.smoothness = if avg_jerk > 0.0 { 1.0 / avg_jerk } else { 0.0 };
             }
 
-            let current_position: Coordinate = data[i].mouse_attributes.current_position;
+            let current_position: Coordinate = data_element.mouse_attributes.current_position;
             let ideal_dx: f64 = current_position.0 - first_position.0;
             let ideal_dy: f64 = current_position.1 - first_position.1;
             let ideal_path_length: f64 = (ideal_dx.powi(2) + ideal_dy.powi(2)).sqrt();
 
-            let current_path_length: f64 = data[i].mouse_attributes.path_length;
+            let current_path_length: f64 = data_element.mouse_attributes.path_length;
             derived.deviation_from_ideal_path = if ideal_path_length > 0.0 {
                 current_path_length / ideal_path_length
             } else {
