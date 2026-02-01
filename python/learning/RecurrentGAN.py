@@ -14,9 +14,16 @@ import argparse
 import csv
 import math
 import os
+from contextlib import nullcontext
 from datetime import datetime
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+warnings.filterwarnings(
+    "ignore",
+    message="Attempting to run cuBLAS, but there was no current CUDA context!"
+)
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -53,9 +60,16 @@ class Config:
     batch_size: int = 32
     learning_rate: float = 1e-4
     betas: Tuple[float, float] = (0.5, 0.9)
-    n_critic: int = 5  # Train discriminator n times per generator update
+    n_critic: int = 1  # Train discriminator n times per generator update
     gradient_penalty_weight: float = 10.0
+    gp_every_n: int = 4  # Compute gradient penalty every N discriminator steps
+    gp_batch_frac: float = 0.25  # Fraction of batch used for gradient penalty
+    use_amp: bool = True  # Use mixed precision on CUDA
     epochs: int = 1000
+    
+    # DataLoader performance
+    num_workers: int = 4
+    pin_memory: bool = True
     
     # Early stopping and scheduling
     patience: int = 50
@@ -804,7 +818,12 @@ def compute_gradient_penalty(
     interpolated.requires_grad_(True)
     
     # Discriminator output
-    d_interpolated = discriminator(interpolated, interpolated_dts, lengths)
+    # Disable CuDNN for RNNs to allow double backwards (required for gradient penalty)
+    if device.type == 'cuda':
+        with torch.backends.cudnn.flags(enabled=False):
+            d_interpolated = discriminator(interpolated, interpolated_dts, lengths)
+    else:
+        d_interpolated = discriminator(interpolated, interpolated_dts, lengths)
     
     # Compute gradients
     gradients = torch.autograd.grad(
@@ -838,6 +857,8 @@ class Trainer:
         self.discriminator = discriminator.to(device)
         self.config = config
         self.device = device
+        self.use_amp = bool(self.config.use_amp and self.device.type == 'cuda')
+        self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
         
         # Optimizers
         self.g_optimizer = torch.optim.Adam(
@@ -877,6 +898,7 @@ class Trainer:
         
         # Metrics tracking
         self.epoch = 0
+        self.d_step = 0
     
     def get_teacher_forcing_ratio(self) -> float:
         """Compute teacher forcing ratio with decay."""
@@ -926,33 +948,78 @@ class Trainer:
         fake_trajectories = trajectory_to_absolute(starts, fake_deltas)
         fake_dts_padded = F.pad(fake_dts, (1, 0), value=0.001)
         
-        # Discriminator scores
-        real_score = self.discriminator(
-            real_trajectories, real_dts_padded, lengths + 1
-        )
-        fake_score = self.discriminator(
-            fake_trajectories, fake_dts_padded, fake_lengths + 1
-        )
+        lengths_plus_one = lengths + 1
+        fake_lengths_plus_one = fake_lengths + 1
         
-        # Wasserstein loss
-        d_loss = fake_score.mean() - real_score.mean()
+        autocast_ctx = torch.amp.autocast(device_type='cuda') if self.use_amp else nullcontext()
+        with autocast_ctx:
+            # Discriminator scores
+            real_score = self.discriminator(
+                real_trajectories, real_dts_padded, lengths_plus_one
+            )
+            fake_score = self.discriminator(
+                fake_trajectories, fake_dts_padded, fake_lengths_plus_one
+            )
+            
+            # Wasserstein loss
+            d_loss = fake_score.mean() - real_score.mean()
         
-        # Gradient penalty
-        gp = compute_gradient_penalty(
-            self.discriminator,
-            real_trajectories,
-            fake_trajectories,
-            real_dts_padded,
-            fake_dts_padded,
-            lengths + 1,
-            self.device
-        )
+        # Gradient penalty (computed every N steps on a subset of the batch)
+        gp = torch.tensor(0.0, device=self.device)
+        gp_every_n = max(1, self.config.gp_every_n)
+        do_gp = (self.d_step % gp_every_n == 0)
+        self.d_step += 1
+        
+        if do_gp:
+            gp_batch_frac = min(max(self.config.gp_batch_frac, 0.0), 1.0)
+            gp_batch_size = max(1, int(math.ceil(batch_size * gp_batch_frac)))
+            
+            if gp_batch_size < batch_size:
+                idx = torch.randperm(batch_size, device=self.device)[:gp_batch_size]
+                gp_real_traj = real_trajectories.index_select(0, idx)
+                gp_fake_traj = fake_trajectories.index_select(0, idx)
+                gp_real_dts = real_dts_padded.index_select(0, idx)
+                gp_fake_dts = fake_dts_padded.index_select(0, idx)
+                gp_lengths = lengths_plus_one.index_select(0, idx)
+            else:
+                gp_real_traj = real_trajectories
+                gp_fake_traj = fake_trajectories
+                gp_real_dts = real_dts_padded
+                gp_fake_dts = fake_dts_padded
+                gp_lengths = lengths_plus_one
+            
+            if self.use_amp:
+                with torch.amp.autocast(device_type='cuda', enabled=False):
+                    gp = compute_gradient_penalty(
+                        self.discriminator,
+                        gp_real_traj,
+                        gp_fake_traj,
+                        gp_real_dts,
+                        gp_fake_dts,
+                        gp_lengths,
+                        self.device
+                    )
+            else:
+                gp = compute_gradient_penalty(
+                    self.discriminator,
+                    gp_real_traj,
+                    gp_fake_traj,
+                    gp_real_dts,
+                    gp_fake_dts,
+                    gp_lengths,
+                    self.device
+                )
         
         # Total loss
         total_loss = d_loss + self.config.gradient_penalty_weight * gp
         
-        total_loss.backward()
-        self.d_optimizer.step()
+        if self.use_amp:
+            self.scaler.scale(total_loss).backward()
+            self.scaler.step(self.d_optimizer)
+            self.scaler.update()
+        else:
+            total_loss.backward()
+            self.d_optimizer.step()
         
         return {
             'd_loss': d_loss.item(),
@@ -979,61 +1046,68 @@ class Trainer:
         z = torch.randn(batch_size, self.config.latent_dim, device=self.device)
         tf_ratio = self.get_teacher_forcing_ratio()
         
-        fake_sequences, fake_lengths = self.generator(
-            starts, ends, z,
-            target_sequences=sequences,
-            target_lengths=lengths,
-            teacher_forcing_ratio=tf_ratio
-        )
+        autocast_ctx = torch.amp.autocast(device_type='cuda') if self.use_amp else nullcontext()
+        with autocast_ctx:
+            fake_sequences, fake_lengths = self.generator(
+                starts, ends, z,
+                target_sequences=sequences,
+                target_lengths=lengths,
+                teacher_forcing_ratio=tf_ratio
+            )
+            
+            fake_deltas = fake_sequences[:, :, :2]
+            fake_dts = fake_sequences[:, :, 2]
+            fake_trajectories = trajectory_to_absolute(starts, fake_deltas)
+            fake_dts_padded = F.pad(fake_dts, (1, 0), value=0.001)
+            
+            # Discriminator score
+            fake_score = self.discriminator(
+                fake_trajectories, fake_dts_padded, fake_lengths + 1
+            )
+            
+            # Generator loss (maximize discriminator score)
+            g_loss = -fake_score.mean()
+            
+            # Endpoint loss: encourage reaching target (stronger weight)
+            final_pos = fake_trajectories[torch.arange(batch_size, device=self.device), fake_lengths]
+            endpoint_loss = F.mse_loss(final_pos, ends)
+            
+            # Direction consistency loss: penalize moving away from target
+            # Compute target direction from start to end
+            target_direction = ends - starts  # (batch, 2)
+            target_direction = target_direction / (torch.sqrt((target_direction ** 2).sum(dim=-1, keepdim=True)) + 1e-8)
+            
+            # Compute movement directions (normalized)
+            movement_norms = torch.sqrt((fake_deltas ** 2).sum(dim=-1, keepdim=True) + 1e-8)
+            movement_directions = fake_deltas / movement_norms  # (batch, seq, 2)
+            
+            # Cosine similarity between movement and target direction
+            # We want movements to generally align with target direction
+            target_direction_expanded = target_direction.unsqueeze(1)  # (batch, 1, 2)
+            cosine_sim = (movement_directions * target_direction_expanded).sum(dim=-1)  # (batch, seq)
+            
+            # Create mask for valid timesteps
+            max_len = fake_deltas.shape[1]
+            mask = torch.arange(max_len, device=self.device).unsqueeze(0) < fake_lengths.unsqueeze(1)
+            
+            # Direction loss: penalize negative cosine similarity (moving away from target)
+            # We use 1 - cosine_sim so that moving toward target (cosine_sim=1) gives loss=0
+            direction_loss = ((1 - cosine_sim) * mask.float()).sum() / mask.float().sum()
+            
+            # Total loss with configurable weights
+            total_loss = (
+                g_loss + 
+                self.config.endpoint_loss_weight * endpoint_loss + 
+                self.config.direction_loss_weight * direction_loss
+            )
         
-        fake_deltas = fake_sequences[:, :, :2]
-        fake_dts = fake_sequences[:, :, 2]
-        fake_trajectories = trajectory_to_absolute(starts, fake_deltas)
-        fake_dts_padded = F.pad(fake_dts, (1, 0), value=0.001)
-        
-        # Discriminator score
-        fake_score = self.discriminator(
-            fake_trajectories, fake_dts_padded, fake_lengths + 1
-        )
-        
-        # Generator loss (maximize discriminator score)
-        g_loss = -fake_score.mean()
-        
-        # Endpoint loss: encourage reaching target (stronger weight)
-        final_pos = fake_trajectories[torch.arange(batch_size), fake_lengths]
-        endpoint_loss = F.mse_loss(final_pos, ends)
-        
-        # Direction consistency loss: penalize moving away from target
-        # Compute target direction from start to end
-        target_direction = ends - starts  # (batch, 2)
-        target_direction = target_direction / (torch.sqrt((target_direction ** 2).sum(dim=-1, keepdim=True)) + 1e-8)
-        
-        # Compute movement directions (normalized)
-        movement_norms = torch.sqrt((fake_deltas ** 2).sum(dim=-1, keepdim=True) + 1e-8)
-        movement_directions = fake_deltas / movement_norms  # (batch, seq, 2)
-        
-        # Cosine similarity between movement and target direction
-        # We want movements to generally align with target direction
-        target_direction_expanded = target_direction.unsqueeze(1)  # (batch, 1, 2)
-        cosine_sim = (movement_directions * target_direction_expanded).sum(dim=-1)  # (batch, seq)
-        
-        # Create mask for valid timesteps
-        max_len = fake_deltas.shape[1]
-        mask = torch.arange(max_len, device=self.device).unsqueeze(0) < fake_lengths.unsqueeze(1)
-        
-        # Direction loss: penalize negative cosine similarity (moving away from target)
-        # We use 1 - cosine_sim so that moving toward target (cosine_sim=1) gives loss=0
-        direction_loss = ((1 - cosine_sim) * mask.float()).sum() / mask.float().sum()
-        
-        # Total loss with configurable weights
-        total_loss = (
-            g_loss + 
-            self.config.endpoint_loss_weight * endpoint_loss + 
-            self.config.direction_loss_weight * direction_loss
-        )
-        
-        total_loss.backward()
-        self.g_optimizer.step()
+        if self.use_amp:
+            self.scaler.scale(total_loss).backward()
+            self.scaler.step(self.g_optimizer)
+            self.scaler.update()
+        else:
+            total_loss.backward()
+            self.g_optimizer.step()
         
         return {
             'g_loss': g_loss.item(),
@@ -1354,7 +1428,7 @@ def parse_args():
     # Data
     parser.add_argument(
         '--data_path', type=str,
-        default='../../../crates/mouse-collection-environment/example_data/',
+        default='../../data/',
         help='Path to training data directory or CSV file'
     )
     
@@ -1482,12 +1556,16 @@ def main():
             print("Error: No trajectories loaded. Check data path.")
             return
         
+        num_workers = config.num_workers
+        pin_memory = config.pin_memory and device.type == 'cuda'
         dataloader = DataLoader(
             dataset,
             batch_size=config.batch_size,
             shuffle=True,
             collate_fn=collate_trajectories,
-            num_workers=0,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=num_workers > 0,
             drop_last=True
         )
         
