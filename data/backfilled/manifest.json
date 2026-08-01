@@ -1,0 +1,159 @@
+{
+  "schema_version": 2,
+  "burst_threshold_seconds": 0.001,
+  "infer_viewport": false,
+  "files": [
+    {
+      "source": "data/mouse_data_20250813_235208.csv",
+      "rows": 1514,
+      "batches": 1356,
+      "mean_batch_size": 1.1165,
+      "median_batch_interval_seconds": 0.016705,
+      "implied_refresh_hz": 59.86,
+      "viewport_estimate": {
+        "width": 942,
+        "height": 684
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 43,
+        "click_max_x": 895.85546875,
+        "click_max_y": 603.04296875
+      }
+    },
+    {
+      "source": "data/mouse_data_20260118_015741.csv",
+      "rows": 69262,
+      "batches": 11926,
+      "mean_batch_size": 5.8076,
+      "median_batch_interval_seconds": 0.013319,
+      "implied_refresh_hz": 75.08,
+      "viewport_estimate": {
+        "width": 2195,
+        "height": 1175
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 234,
+        "click_max_x": 2173.479248046875,
+        "click_max_y": 1152.0263671875
+      }
+    },
+    {
+      "source": "data/mouse_data_20260118_034910.csv",
+      "rows": 1961,
+      "batches": 352,
+      "mean_batch_size": 5.5710,
+      "median_batch_interval_seconds": 0.013292,
+      "implied_refresh_hz": 75.24,
+      "viewport_estimate": {
+        "width": 1572,
+        "height": 675
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 5,
+        "click_max_x": 1334.5733642578125,
+        "click_max_y": 579.4437255859375
+      }
+    },
+    {
+      "source": "data/mouse_data_20260203_112701.csv",
+      "rows": 1080,
+      "batches": 1059,
+      "mean_batch_size": 1.0198,
+      "median_batch_interval_seconds": 0.016696,
+      "implied_refresh_hz": 59.89,
+      "viewport_estimate": {
+        "width": 1440,
+        "height": 769
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 21,
+        "click_max_x": 1295.7547607421875,
+        "click_max_y": 680.275634765625
+      }
+    },
+    {
+      "source": "data/mouse_data_20260203_112702.csv",
+      "rows": 12273,
+      "batches": 11938,
+      "mean_batch_size": 1.0281,
+      "median_batch_interval_seconds": 0.016624,
+      "implied_refresh_hz": 60.15,
+      "viewport_estimate": {
+        "width": 1440,
+        "height": 741
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 331,
+        "click_max_x": 1404.4063720703125,
+        "click_max_y": 670.9387817382813
+      }
+    },
+    {
+      "source": "data/mouse_data_20260206_204924.csv",
+      "rows": 8560,
+      "batches": 6578,
+      "mean_batch_size": 1.3013,
+      "median_batch_interval_seconds": 0.014445,
+      "implied_refresh_hz": 69.23,
+      "viewport_estimate": {
+        "width": 998,
+        "height": 767
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 238,
+        "click_max_x": 998,
+        "click_max_y": 737
+      }
+    },
+    {
+      "source": "data/mouse_data_20260206_205433.csv",
+      "rows": 30829,
+      "batches": 24143,
+      "mean_batch_size": 1.2769,
+      "median_batch_interval_seconds": 0.014418,
+      "implied_refresh_hz": 69.36,
+      "viewport_estimate": {
+        "width": 1023,
+        "height": 769
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 1034,
+        "click_max_x": 1002,
+        "click_max_y": 750
+      }
+    },
+    {
+      "source": "data/mouse_data_20260207_000701.csv",
+      "rows": 231967,
+      "batches": 43378,
+      "mean_batch_size": 5.3476,
+      "median_batch_interval_seconds": 0.013326,
+      "implied_refresh_hz": 75.04,
+      "viewport_estimate": {
+        "width": 1080,
+        "height": 1884
+      },
+      "viewport_written": false,
+      "viewport_estimate_note": "lower bound from observed cursor extent; window size was never recorded",
+      "click_cross_check": {
+        "click_count": 986,
+        "click_max_x": 1045.777099609375,
+        "click_max_y": 1866.5985107421875
+      }
+    }
+  ]
+}

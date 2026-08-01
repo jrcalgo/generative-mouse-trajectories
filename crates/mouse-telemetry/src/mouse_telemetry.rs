@@ -48,13 +48,13 @@ const MIN_PROCESSING_SIZE: usize = MAX_BUFFER_SIZE / 2;
 /// `time_between_movements` between two events drained in the same batch is a
 /// property of the drain loop rather than of the pointer. `batch_id` makes that
 /// grouping explicit so consumers never have to infer it from a dt threshold.
-const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Column layout of the recorded CSV, in write order.
 ///
 /// Version 2 columns are appended after the original 23 so that consumers
 /// reading by position are unaffected and older files remain parseable.
-const CSV_COLUMNS: [&str; 30] = [
+pub const CSV_COLUMNS: [&str; 30] = [
     "timestamp",
     "total_duration",
     "time_between_movements",
@@ -86,6 +86,36 @@ const CSV_COLUMNS: [&str; 30] = [
     "viewport_height",
     "coord_space",
     "schema_version",
+];
+
+/// Column layout written before schema version 2, i.e. every file recorded
+/// prior to commit `3d3d1a4`. Exposed so migration tooling (`bin/backfill.rs`)
+/// can identify and upgrade files written under this layout without
+/// duplicating the column list.
+pub const LEGACY_CSV_COLUMNS: [&str; 23] = [
+    "timestamp",
+    "total_duration",
+    "time_between_movements",
+    "hover_time",
+    "position_x",
+    "position_y",
+    "velocity",
+    "acceleration",
+    "jerk",
+    "path_length",
+    "click_events",
+    "scroll_events",
+    "average_velocity",
+    "peak_velocity",
+    "average_acceleration",
+    "peak_acceleration",
+    "average_momentum",
+    "peak_momentum",
+    "smoothness",
+    "deviation_from_ideal_path",
+    "idle_time",
+    "fitts_index_of_difficulty",
+    "fitts_movement_time",
 ];
 
 /// Enum representing the various mouse click events that can be detected.
@@ -1235,33 +1265,6 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// The 23-column layout written before `SCHEMA_VERSION` 2.
-    const LEGACY_COLUMNS: [&str; 23] = [
-        "timestamp",
-        "total_duration",
-        "time_between_movements",
-        "hover_time",
-        "position_x",
-        "position_y",
-        "velocity",
-        "acceleration",
-        "jerk",
-        "path_length",
-        "click_events",
-        "scroll_events",
-        "average_velocity",
-        "peak_velocity",
-        "average_acceleration",
-        "peak_acceleration",
-        "average_momentum",
-        "peak_momentum",
-        "smoothness",
-        "deviation_from_ideal_path",
-        "idle_time",
-        "fitts_index_of_difficulty",
-        "fitts_movement_time",
-    ];
-
     fn temp_csv(name: &str, header: &[&str]) -> PathBuf {
         let path = std::env::temp_dir().join(format!("mouse_telemetry_test_{name}.csv"));
         let mut file = File::create(&path).expect("create temp csv");
@@ -1296,7 +1299,7 @@ mod tests {
     /// header, so the collector must roll over to a new file instead.
     #[test]
     fn legacy_schema_is_rejected() {
-        let path = temp_csv("legacy", &LEGACY_COLUMNS);
+        let path = temp_csv("legacy", &LEGACY_CSV_COLUMNS);
         assert!(!MouseCollector::header_matches_schema(&path));
         let _ = std::fs::remove_file(&path);
     }
@@ -1305,8 +1308,8 @@ mod tests {
     /// names and positions so existing readers are unaffected.
     #[test]
     fn schema_v2_extends_v1_without_reordering() {
-        assert_eq!(&CSV_COLUMNS[..LEGACY_COLUMNS.len()], &LEGACY_COLUMNS[..]);
-        assert!(CSV_COLUMNS.len() > LEGACY_COLUMNS.len());
+        assert_eq!(&CSV_COLUMNS[..LEGACY_CSV_COLUMNS.len()], &LEGACY_CSV_COLUMNS[..]);
+        assert!(CSV_COLUMNS.len() > LEGACY_CSV_COLUMNS.len());
     }
 
     #[test]
