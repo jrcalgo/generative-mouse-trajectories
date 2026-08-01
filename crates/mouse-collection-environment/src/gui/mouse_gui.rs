@@ -2,7 +2,9 @@ use iced::event::Status;
 use iced::widget::button::Status as buttonStatus;
 use iced::widget::canvas::{Cache, Frame, Path, Text};
 use iced::widget::{Canvas, Space, button, canvas, column, container, row, text};
-use iced::{Alignment, Color, Element, Length, Pixels, Point, Rectangle, Size, Theme, mouse};
+use iced::{
+    Alignment, Color, Element, Length, Pixels, Point, Rectangle, Size, Subscription, Theme, mouse,
+};
 
 use crate::gui::stylesheet::*;
 use mouse_telemetry::mouse_telemetry::MouseCollector;
@@ -36,6 +38,8 @@ pub(crate) enum Message {
     ToggleHotbarCollapse,
     SettingsMinDtChanged(String),
     SettingsAlphaChanged(String),
+    /// A frame was rendered, closing the current batch of coalesced pointer events.
+    FrameRendered,
 }
 
 pub(crate) struct GuiEnvironment {
@@ -136,6 +140,19 @@ impl GuiEnvironment {
     }
 }
 
+/// Converts a canvas size into the viewport recorded alongside each event.
+fn viewport_of(size: Size) -> (f64, f64) {
+    (f64::from(size.width), f64::from(size.height))
+}
+
+/// Subscribes to frame redraws so the collector can close each batch of events.
+///
+/// iced dispatches all pending pointer events before requesting a redraw, so a
+/// frame tick marks exactly where one coalesced batch ends and the next begins.
+pub(crate) fn subscription(_gui: &GuiEnvironment) -> Subscription<Message> {
+    iced::window::frames().map(|_| Message::FrameRendered)
+}
+
 pub(crate) fn update(gui: &mut GuiEnvironment, message: Message) {
     match message {
         Message::ToggleCollecting => {
@@ -217,12 +234,20 @@ pub(crate) fn update(gui: &mut GuiEnvironment, message: Message) {
         Message::SettingsAlphaChanged(s) => {
             gui.alpha_input = s;
         }
+        Message::FrameRendered => {
+            if let Some(collector) = &gui.collector {
+                collector.mark_frame();
+            }
+        }
         Message::CanvasClicked(point) => {
             if !gui.collecting {
                 return;
             }
             if let Some(collector) = &gui.collector {
-                collector.push_left_click((point.x as f64, point.y as f64));
+                collector.push_left_click(
+                    (point.x as f64, point.y as f64),
+                    viewport_of(gui.canvas_size),
+                );
             }
             for button in &gui.game_buttons {
                 if button.contains(point) {
@@ -240,7 +265,7 @@ pub(crate) fn update(gui: &mut GuiEnvironment, message: Message) {
             }
             gui.respawn_if_out_of_bounds();
             if let Some(collector) = &gui.collector {
-                collector.push_left_click((point.x as f64, point.y as f64));
+                collector.push_left_click((point.x as f64, point.y as f64), viewport_of(size));
             }
             for button in &gui.game_buttons {
                 if button.contains(point) {
@@ -258,7 +283,7 @@ pub(crate) fn update(gui: &mut GuiEnvironment, message: Message) {
             }
             gui.respawn_if_out_of_bounds();
             if let Some(collector) = &gui.collector {
-                collector.push_move((point.x as f64, point.y as f64));
+                collector.push_move((point.x as f64, point.y as f64), viewport_of(size));
             }
         }
     }

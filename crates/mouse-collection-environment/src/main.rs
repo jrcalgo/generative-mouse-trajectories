@@ -26,6 +26,7 @@ fn main() {
         gui::mouse_gui::update,
         gui::mouse_gui::view,
     )
+    .subscription(gui::mouse_gui::subscription)
     .theme(|_| Theme::Dark)
     .centered()
     .run()

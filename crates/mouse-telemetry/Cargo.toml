@@ -1,6 +1,6 @@
 [package]
 name = "mouse-telemetry"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["jrcalgo <jacksonr121@outlook.com>"]
 description = "Captures mouse data and computes derived metrics for downstream analysis/tasks"
 repository = "https://github.com/jrcalgo/generative-mouse-trajectories"

@@ -12,6 +12,7 @@ use chrono::{DateTime, Local};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::SystemTime;
@@ -35,6 +36,57 @@ const SMOOTHING_ALPHA: f64 = 0.3;
 // Persistent buffer sizing for winit listener
 const MAX_BUFFER_SIZE: usize = 50000;
 const MIN_PROCESSING_SIZE: usize = MAX_BUFFER_SIZE / 2;
+
+/// CSV schema version written into every row.
+///
+/// Version 1 was the original 23-column layout. Version 2 appends the columns
+/// required to interpret the data downstream: a monotonic clock, the delivery
+/// batch each event arrived in, the viewport it was measured against, and the
+/// coordinate space that viewport refers to.
+///
+/// Windowing toolkits deliver coalesced pointer events in per-frame batches, so
+/// `time_between_movements` between two events drained in the same batch is a
+/// property of the drain loop rather than of the pointer. `batch_id` makes that
+/// grouping explicit so consumers never have to infer it from a dt threshold.
+const SCHEMA_VERSION: u32 = 2;
+
+/// Column layout of the recorded CSV, in write order.
+///
+/// Version 2 columns are appended after the original 23 so that consumers
+/// reading by position are unaffected and older files remain parseable.
+const CSV_COLUMNS: [&str; 30] = [
+    "timestamp",
+    "total_duration",
+    "time_between_movements",
+    "hover_time",
+    "position_x",
+    "position_y",
+    "velocity",
+    "acceleration",
+    "jerk",
+    "path_length",
+    "click_events",
+    "scroll_events",
+    "average_velocity",
+    "peak_velocity",
+    "average_acceleration",
+    "peak_acceleration",
+    "average_momentum",
+    "peak_momentum",
+    "smoothness",
+    "deviation_from_ideal_path",
+    "idle_time",
+    "fitts_index_of_difficulty",
+    "fitts_movement_time",
+    // --- schema version 2 ---
+    "monotonic_ns",
+    "batch_id",
+    "event_seq",
+    "viewport_width",
+    "viewport_height",
+    "coord_space",
+    "schema_version",
+];
 
 /// Enum representing the various mouse click events that can be detected.
 #[derive(Clone)]
@@ -80,8 +132,45 @@ impl fmt::Display for ScrollEvent {
     }
 }
 
+/// Enum identifying the reference frame that a recorded position is measured in.
+///
+/// The two ingestion paths differ: the GUI reports positions relative to its
+/// canvas widget, while the standalone `winit` listener reports them relative to
+/// its own window. Recording which frame applies is what makes `viewport_width`
+/// and `viewport_height` meaningful.
+#[derive(Clone, Copy)]
+enum CoordSpace {
+    /// Position is relative to the GUI canvas widget.
+    Canvas,
+    /// Position is relative to the listener window.
+    Window,
+}
+
+/// Implements the Display trait for `CoordSpace` for human-readable formatting.
+impl fmt::Display for CoordSpace {
+    /// Formats the coordinate space into a human-readable string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let output = match self {
+            CoordSpace::Canvas => "canvas",
+            CoordSpace::Window => "window",
+        };
+        write!(f, "{output}")
+    }
+}
+
 /// Type alias for a coordinate represented as a tuple (x, y) of f64 values.
 type Coordinate = (f64, f64);
+
+/// Structure capturing the context a mouse event was measured against.
+///
+/// Without the viewport size the recorded coordinates cannot be normalized,
+/// since they are relative to a surface whose dimensions vary between machines
+/// and change when the window is resized.
+#[derive(Clone)]
+struct ContextAttributes {
+    viewport: Coordinate,
+    coord_space: CoordSpace,
+}
 
 /// Structure capturing attributes directly related to mouse movement.
 #[derive(Clone)]
@@ -100,6 +189,19 @@ struct MouseMovementAttributes {
 #[derive(Clone)]
 struct TemporalAttributes {
     timestamp: SystemTime,
+    /// Nanoseconds since the collector's epoch, from a monotonic clock.
+    ///
+    /// `timestamp` is wall-clock and can jump backwards when the system clock is
+    /// adjusted; this field is monotonic and is the one to derive intervals from.
+    monotonic_ns: u128,
+    /// Identifier of the delivery batch this event arrived in.
+    ///
+    /// Events sharing a `batch_id` were drained from the toolkit's event queue
+    /// together, so the time recorded between them is drain overhead rather than
+    /// real pointer motion.
+    batch_id: u64,
+    /// Monotonically increasing per-event counter, preserving arrival order.
+    event_seq: u64,
     time_between_movements: f64,
     total_duration: f64,
     hover_time: f64,
@@ -118,6 +220,7 @@ struct CollectedData {
     temporal_attributes: TemporalAttributes,
     mouse_attributes: MouseMovementAttributes,
     behavioral_attributes: BehavioralAttributes,
+    context_attributes: ContextAttributes,
 }
 
 /// Structure holding derived attributes computed from the raw mouse event data.
@@ -169,6 +272,10 @@ pub struct MouseCollector {
     // Tunables
     min_derivative_dt: Arc<RwLock<f64>>,
     smoothing_alpha: Arc<RwLock<f64>>,
+    // Monotonic clock epoch and event/batch counters
+    epoch: time::Instant,
+    batch_counter: AtomicU64,
+    event_counter: AtomicU64,
 }
 
 impl MouseCollector {
@@ -205,6 +312,9 @@ impl MouseCollector {
             data_dir: Arc::new(RwLock::new(DATA_DIR.to_string())),
             min_derivative_dt: Arc::new(RwLock::new(MIN_DERIVATIVE_DT)),
             smoothing_alpha: Arc::new(RwLock::new(SMOOTHING_ALPHA)),
+            epoch: time::Instant::now(),
+            batch_counter: AtomicU64::new(0),
+            event_counter: AtomicU64::new(0),
         });
 
         if start {
@@ -228,6 +338,25 @@ impl MouseCollector {
         }
 
         mouse_collector
+    }
+
+    /// Reports whether an existing record file can be appended to.
+    ///
+    /// A file written under an earlier schema has fewer columns than the current
+    /// layout, so appending to it would produce rows that no longer line up with
+    /// its header. Missing or empty files are safe: the header is written fresh.
+    fn header_matches_schema(file_path: &std::path::Path) -> bool {
+        let Ok(file) = File::open(file_path) else {
+            return true;
+        };
+        let mut reader = csv::ReaderBuilder::new()
+            .flexible(true)
+            .from_reader(file);
+        match reader.headers() {
+            Ok(header) if header.is_empty() => true,
+            Ok(header) => header.len() == CSV_COLUMNS.len(),
+            Err(_) => false,
+        }
     }
 
     /// Build a unique default record filename in the provided directory.
@@ -346,16 +475,41 @@ impl MouseCollector {
     }
 
     // --- Public helper APIs for GUI integration ---
-    /// Pushes a single cursor movement event into the internal buffer.
-    pub fn push_move(&self, position: (f64, f64)) {
-        let current_timestamp: SystemTime = SystemTime::now();
-        let new_data = CollectedData {
-            temporal_attributes: TemporalAttributes {
-                timestamp: current_timestamp,
-                time_between_movements: 0.0,
-                total_duration: 0.0,
-                hover_time: 0.0,
-            },
+    /// Marks the boundary of a delivery batch.
+    ///
+    /// Windowing toolkits hand over coalesced pointer events in per-frame
+    /// batches, all drained in a tight loop. Callers invoke this once per
+    /// rendered frame so that every event pushed since the previous call shares
+    /// a `batch_id`, recording the grouping explicitly rather than leaving
+    /// consumers to infer it from implausibly small time deltas.
+    pub fn mark_frame(&self) {
+        self.batch_counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Stamps an event with the monotonic clock, current batch, and arrival order.
+    fn stamp(&self) -> TemporalAttributes {
+        TemporalAttributes {
+            timestamp: SystemTime::now(),
+            monotonic_ns: self.epoch.elapsed().as_nanos(),
+            batch_id: self.batch_counter.load(Ordering::Relaxed),
+            event_seq: self.event_counter.fetch_add(1, Ordering::Relaxed),
+            time_between_movements: 0.0,
+            total_duration: 0.0,
+            hover_time: 0.0,
+        }
+    }
+
+    /// Builds a buffered event, leaving the derived fields for the recorder to fill.
+    fn build_event(
+        &self,
+        position: Coordinate,
+        viewport: Coordinate,
+        coord_space: CoordSpace,
+        click_events: ClickEvent,
+        scroll_events: ScrollEvent,
+    ) -> CollectedData {
+        CollectedData {
+            temporal_attributes: self.stamp(),
             mouse_attributes: MouseMovementAttributes {
                 current_position: position,
                 movement_delta: (0.0, 0.0),
@@ -367,38 +521,41 @@ impl MouseCollector {
                 jerk: 0.0,
             },
             behavioral_attributes: BehavioralAttributes {
-                click_events: ClickEvent::None,
-                scroll_events: ScrollEvent::None,
+                click_events,
+                scroll_events,
             },
-        };
+            context_attributes: ContextAttributes {
+                viewport,
+                coord_space,
+            },
+        }
+    }
+
+    /// Pushes a single cursor movement event into the internal buffer.
+    ///
+    /// `viewport` is the size of the surface `position` is measured against. It
+    /// is recorded with the event so the coordinates can be normalized later
+    /// without knowing which machine or window size produced them.
+    pub fn push_move(&self, position: (f64, f64), viewport: (f64, f64)) {
+        let new_data = self.build_event(
+            position,
+            viewport,
+            CoordSpace::Canvas,
+            ClickEvent::None,
+            ScrollEvent::None,
+        );
         self.append_new_collection(&[new_data]);
     }
 
     /// Pushes a single left-click event into the internal buffer.
-    pub fn push_left_click(&self, position: (f64, f64)) {
-        let current_timestamp: SystemTime = SystemTime::now();
-        let new_data = CollectedData {
-            temporal_attributes: TemporalAttributes {
-                timestamp: current_timestamp,
-                time_between_movements: 0.0,
-                total_duration: 0.0,
-                hover_time: 0.0,
-            },
-            mouse_attributes: MouseMovementAttributes {
-                current_position: position,
-                movement_delta: (0.0, 0.0),
-                distance_traveled: 0.0,
-                path_length: 0.0,
-                direction_angles: 0.0,
-                velocity: 0.0,
-                acceleration: 0.0,
-                jerk: 0.0,
-            },
-            behavioral_attributes: BehavioralAttributes {
-                click_events: ClickEvent::Left,
-                scroll_events: ScrollEvent::None,
-            },
-        };
+    pub fn push_left_click(&self, position: (f64, f64), viewport: (f64, f64)) {
+        let new_data = self.build_event(
+            position,
+            viewport,
+            CoordSpace::Canvas,
+            ClickEvent::Left,
+            ScrollEvent::None,
+        );
         self.append_new_collection(&[new_data]);
     }
 
@@ -494,6 +651,57 @@ trait MouseRecorder {
         collection: Vec<CollectedData>,
         derivations: Vec<DerivedAttributes>,
     );
+}
+
+/// Formats a `SystemTime` as fractional seconds since the Unix epoch.
+fn system_time_to_string(system_time: SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    let secs = match system_time.duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        Err(_) => 0.0,
+    };
+    format!("{secs:.4}")
+}
+
+/// Builds one CSV row, in the order declared by [`CSV_COLUMNS`].
+///
+/// The fixed-size return type ties the row width to the header width at compile
+/// time: adding a column to one without the other fails to build, rather than
+/// silently writing rows that no longer line up with the header.
+fn csv_row(data: &CollectedData, derived: &DerivedAttributes) -> [String; CSV_COLUMNS.len()] {
+    [
+        system_time_to_string(data.temporal_attributes.timestamp),
+        data.temporal_attributes.total_duration.to_string(),
+        data.temporal_attributes.time_between_movements.to_string(),
+        data.temporal_attributes.hover_time.to_string(),
+        data.mouse_attributes.current_position.0.to_string(),
+        data.mouse_attributes.current_position.1.to_string(),
+        data.mouse_attributes.velocity.to_string(),
+        data.mouse_attributes.acceleration.to_string(),
+        data.mouse_attributes.jerk.to_string(),
+        data.mouse_attributes.path_length.to_string(),
+        data.behavioral_attributes.click_events.to_string(),
+        data.behavioral_attributes.scroll_events.to_string(),
+        derived.average_velocity.to_string(),
+        derived.peak_velocity.to_string(),
+        derived.average_acceleration.to_string(),
+        derived.peak_acceleration.to_string(),
+        derived.average_momentum.to_string(),
+        derived.peak_momentum.to_string(),
+        derived.smoothness.to_string(),
+        derived.deviation_from_ideal_path.to_string(),
+        derived.idle_time.to_string(),
+        derived.fitts_index_of_difficulty.to_string(),
+        derived.fitts_movement_time.to_string(),
+        // --- schema version 2 ---
+        data.temporal_attributes.monotonic_ns.to_string(),
+        data.temporal_attributes.batch_id.to_string(),
+        data.temporal_attributes.event_seq.to_string(),
+        data.context_attributes.viewport.0.to_string(),
+        data.context_attributes.viewport.1.to_string(),
+        data.context_attributes.coord_space.to_string(),
+        SCHEMA_VERSION.to_string(),
+    ]
 }
 
 impl MouseRecorder for MouseCollector {
@@ -765,15 +973,6 @@ impl MouseRecorder for MouseCollector {
         collection: Vec<CollectedData>,
         derivations: Vec<DerivedAttributes>,
     ) {
-        fn system_time_to_string(system_time: SystemTime) -> String {
-            use std::time::UNIX_EPOCH;
-            let secs = match system_time.duration_since(UNIX_EPOCH) {
-                Ok(d) => d.as_secs_f64(),
-                Err(_) => 0.0,
-            };
-            format!("{secs:.4}")
-        }
-
         let dir_string = self.get_data_dir();
         let data_dir = PathBuf::from(&dir_string);
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
@@ -786,7 +985,21 @@ impl MouseRecorder for MouseCollector {
             .read()
             .map(|s| s.clone())
             .unwrap_or_else(|_| "mouse_data.csv".to_string());
-        let file_path = data_dir.join(&filename);
+        let mut file_path = data_dir.join(&filename);
+
+        // Appending rows to a file written under an older schema would misalign
+        // every row against its header, so roll over to a fresh file instead.
+        if !Self::header_matches_schema(&file_path) {
+            let replacement = Self::generate_unique_record_filename(&data_dir);
+            eprintln!(
+                "'{}' was written with an incompatible CSV schema; recording to '{replacement}' instead",
+                file_path.display()
+            );
+            if let Ok(mut name) = self.record_filename.write() {
+                name.clone_from(&replacement);
+            }
+            file_path = data_dir.join(&replacement);
+        }
         let file_result = OpenOptions::new()
             .create(true)
             .append(true)
@@ -804,65 +1017,17 @@ impl MouseRecorder for MouseCollector {
         let need_header = std::fs::metadata(&file_path)
             .map(|m| m.len() == 0)
             .unwrap_or(true);
-        if need_header && let Err(e) = writer.write_record([
-                "timestamp",
-                "total_duration",
-                "time_between_movements",
-                "hover_time",
-                "position_x",
-                "position_y",
-                "velocity",
-                "acceleration",
-                "jerk",
-                "path_length",
-                "click_events",
-                "scroll_events",
-                "average_velocity",
-                "peak_velocity",
-                "average_acceleration",
-                "peak_acceleration",
-                "average_momentum",
-                "peak_momentum",
-                "smoothness",
-                "deviation_from_ideal_path",
-                "idle_time",
-                "fitts_index_of_difficulty",
-                "fitts_movement_time",
-            ]) {
-                eprintln!(
-                    "Failed to write CSV header to '{}': {e}",
-                    file_path.display()
-                );
-                return;
-            }
-        
+        if need_header && let Err(e) = writer.write_record(CSV_COLUMNS) {
+            eprintln!(
+                "Failed to write CSV header to '{}': {e}",
+                file_path.display()
+            );
+            return;
+        }
+
 
         for (data, derived) in collection.iter().zip(derivations.iter()) {
-            if let Err(e) = writer.write_record(&[
-                system_time_to_string(data.temporal_attributes.timestamp),
-                data.temporal_attributes.total_duration.to_string(),
-                data.temporal_attributes.time_between_movements.to_string(),
-                data.temporal_attributes.hover_time.to_string(),
-                data.mouse_attributes.current_position.0.to_string(),
-                data.mouse_attributes.current_position.1.to_string(),
-                data.mouse_attributes.velocity.to_string(),
-                data.mouse_attributes.acceleration.to_string(),
-                data.mouse_attributes.jerk.to_string(),
-                data.mouse_attributes.path_length.to_string(),
-                data.behavioral_attributes.click_events.to_string(),
-                data.behavioral_attributes.scroll_events.to_string(),
-                derived.average_velocity.to_string(),
-                derived.peak_velocity.to_string(),
-                derived.average_acceleration.to_string(),
-                derived.peak_acceleration.to_string(),
-                derived.average_momentum.to_string(),
-                derived.peak_momentum.to_string(),
-                derived.smoothness.to_string(),
-                derived.deviation_from_ideal_path.to_string(),
-                derived.idle_time.to_string(),
-                derived.fitts_index_of_difficulty.to_string(),
-                derived.fitts_movement_time.to_string(),
-            ]) {
+            if let Err(e) = writer.write_record(csv_row(data, derived)) {
                 eprintln!("Failed to write CSV row to '{}': {e}", file_path.display());
                 break;
             }
@@ -947,6 +1112,31 @@ struct MouseApp<'a> {
     last_position: Option<Coordinate>,
 }
 
+impl MouseApp<'_> {
+    /// Size of the listener window, the reference frame for recorded positions.
+    ///
+    /// Falls back to `(0.0, 0.0)` before the window exists, which marks the
+    /// viewport as unknown rather than asserting a size that was never measured.
+    fn viewport(&self) -> Coordinate {
+        self.window
+            .as_ref()
+            .map(|window| {
+                let size = window.inner_size();
+                (f64::from(size.width), f64::from(size.height))
+            })
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// Buffers an event, flushing to the collector once enough have accumulated.
+    fn buffer_event(&mut self, data: CollectedData) {
+        self.buffer.push(data);
+        if self.buffer.len() >= MIN_PROCESSING_SIZE {
+            self.collector.append_new_collection(&self.buffer);
+            self.buffer.clear();
+        }
+    }
+}
+
 /// Implements the `ApplicationHandler` trait for `MouseApp` to handle window-related events.
 impl ApplicationHandler<()> for MouseApp<'_> {
     /// Called when the application is resumed; creates a window for event capture.
@@ -965,49 +1155,30 @@ impl ApplicationHandler<()> for MouseApp<'_> {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        let viewport: Coordinate = self.viewport();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let current_timestamp: SystemTime = SystemTime::now();
                 let coord: Coordinate = (position.x, position.y);
                 let previous_coord: Coordinate = self.last_position.unwrap_or(coord);
                 let movement_delta: Coordinate =
                     (coord.0 - previous_coord.0, coord.1 - previous_coord.1);
                 self.last_position = Some(coord);
 
-                let new_data = CollectedData {
-                    temporal_attributes: TemporalAttributes {
-                        timestamp: current_timestamp,
-                        time_between_movements: 0.0,
-                        total_duration: 0.0,
-                        hover_time: 0.0,
-                    },
-                    mouse_attributes: MouseMovementAttributes {
-                        current_position: coord,
-                        movement_delta,
-                        distance_traveled: 0.0,
-                        path_length: 0.0,
-                        direction_angles: 0.0,
-                        velocity: 0.0,
-                        acceleration: 0.0,
-                        jerk: 0.0,
-                    },
-                    behavioral_attributes: BehavioralAttributes {
-                        click_events: ClickEvent::None,
-                        scroll_events: ScrollEvent::None,
-                    },
-                };
-                self.buffer.push(new_data);
-                if self.buffer.len() >= MIN_PROCESSING_SIZE {
-                    self.collector.append_new_collection(&self.buffer);
-                    self.buffer.clear();
-                }
+                let mut new_data = self.collector.build_event(
+                    coord,
+                    viewport,
+                    CoordSpace::Window,
+                    ClickEvent::None,
+                    ScrollEvent::None,
+                );
+                new_data.mouse_attributes.movement_delta = movement_delta;
+                self.buffer_event(new_data);
             }
             WindowEvent::MouseInput {
                 state: _state,
                 button,
                 ..
             } => {
-                let current_timestamp: SystemTime = SystemTime::now();
                 let click_event: ClickEvent = match button {
                     MouseButton::Left => ClickEvent::Left,
                     MouseButton::Right => ClickEvent::Right,
@@ -1016,36 +1187,16 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                 };
                 let current_coord: Coordinate = self.last_position.unwrap_or((0.0, 0.0));
 
-                let new_data = CollectedData {
-                    temporal_attributes: TemporalAttributes {
-                        timestamp: current_timestamp,
-                        time_between_movements: 0.0,
-                        total_duration: 0.0,
-                        hover_time: 0.0,
-                    },
-                    mouse_attributes: MouseMovementAttributes {
-                        current_position: current_coord,
-                        movement_delta: (0.0, 0.0),
-                        distance_traveled: 0.0,
-                        path_length: 0.0,
-                        direction_angles: 0.0,
-                        velocity: 0.0,
-                        acceleration: 0.0,
-                        jerk: 0.0,
-                    },
-                    behavioral_attributes: BehavioralAttributes {
-                        click_events: click_event,
-                        scroll_events: ScrollEvent::None,
-                    },
-                };
-                self.buffer.push(new_data);
-                if self.buffer.len() >= MIN_PROCESSING_SIZE {
-                    self.collector.append_new_collection(&self.buffer);
-                    self.buffer.clear();
-                }
+                let new_data = self.collector.build_event(
+                    current_coord,
+                    viewport,
+                    CoordSpace::Window,
+                    click_event,
+                    ScrollEvent::None,
+                );
+                self.buffer_event(new_data);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let current_timestamp: SystemTime = SystemTime::now();
                 let scroll_event: ScrollEvent = match delta {
                     MouseScrollDelta::LineDelta(_, y) => {
                         if y > 0.0 {
@@ -1057,35 +1208,246 @@ impl ApplicationHandler<()> for MouseApp<'_> {
                     _ => ScrollEvent::None,
                 };
                 let current_coord: Coordinate = self.last_position.unwrap_or((0.0, 0.0));
-                let new_data = CollectedData {
-                    temporal_attributes: TemporalAttributes {
-                        timestamp: current_timestamp,
-                        time_between_movements: 0.0,
-                        total_duration: 0.0,
-                        hover_time: 0.0,
-                    },
-                    mouse_attributes: MouseMovementAttributes {
-                        current_position: current_coord,
-                        movement_delta: (0.0, 0.0),
-                        distance_traveled: 0.0,
-                        path_length: 0.0,
-                        direction_angles: 0.0,
-                        velocity: 0.0,
-                        acceleration: 0.0,
-                        jerk: 0.0,
-                    },
-                    behavioral_attributes: BehavioralAttributes {
-                        click_events: ClickEvent::None,
-                        scroll_events: scroll_event,
-                    },
-                };
-                self.buffer.push(new_data);
-                if self.buffer.len() >= MIN_PROCESSING_SIZE {
-                    self.collector.append_new_collection(&self.buffer);
-                    self.buffer.clear();
-                }
+                let new_data = self.collector.build_event(
+                    current_coord,
+                    viewport,
+                    CoordSpace::Window,
+                    ClickEvent::None,
+                    scroll_event,
+                );
+                self.buffer_event(new_data);
             }
             _ => {}
         }
+    }
+
+    /// Called once the event queue has been drained for this iteration.
+    ///
+    /// This is the natural boundary of a delivery batch: every event handled
+    /// since the previous call was coalesced and dispatched together.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        self.collector.mark_frame();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// The 23-column layout written before `SCHEMA_VERSION` 2.
+    const LEGACY_COLUMNS: [&str; 23] = [
+        "timestamp",
+        "total_duration",
+        "time_between_movements",
+        "hover_time",
+        "position_x",
+        "position_y",
+        "velocity",
+        "acceleration",
+        "jerk",
+        "path_length",
+        "click_events",
+        "scroll_events",
+        "average_velocity",
+        "peak_velocity",
+        "average_acceleration",
+        "peak_acceleration",
+        "average_momentum",
+        "peak_momentum",
+        "smoothness",
+        "deviation_from_ideal_path",
+        "idle_time",
+        "fitts_index_of_difficulty",
+        "fitts_movement_time",
+    ];
+
+    fn temp_csv(name: &str, header: &[&str]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("mouse_telemetry_test_{name}.csv"));
+        let mut file = File::create(&path).expect("create temp csv");
+        if !header.is_empty() {
+            writeln!(file, "{}", header.join(",")).expect("write header");
+        }
+        path
+    }
+
+    #[test]
+    fn missing_file_is_appendable() {
+        let path = std::env::temp_dir().join("mouse_telemetry_test_does_not_exist.csv");
+        let _ = std::fs::remove_file(&path);
+        assert!(MouseCollector::header_matches_schema(&path));
+    }
+
+    #[test]
+    fn empty_file_is_appendable() {
+        let path = temp_csv("empty", &[]);
+        assert!(MouseCollector::header_matches_schema(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn current_schema_is_appendable() {
+        let path = temp_csv("current", &CSV_COLUMNS);
+        assert!(MouseCollector::header_matches_schema(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Appending v2 rows to a v1 file would misalign every row against its
+    /// header, so the collector must roll over to a new file instead.
+    #[test]
+    fn legacy_schema_is_rejected() {
+        let path = temp_csv("legacy", &LEGACY_COLUMNS);
+        assert!(!MouseCollector::header_matches_schema(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Guards the additive-schema promise: the original columns keep their
+    /// names and positions so existing readers are unaffected.
+    #[test]
+    fn schema_v2_extends_v1_without_reordering() {
+        assert_eq!(&CSV_COLUMNS[..LEGACY_COLUMNS.len()], &LEGACY_COLUMNS[..]);
+        assert!(CSV_COLUMNS.len() > LEGACY_COLUMNS.len());
+    }
+
+    #[test]
+    fn csv_row_width_matches_header() {
+        let data = CollectedData {
+            temporal_attributes: TemporalAttributes {
+                timestamp: SystemTime::UNIX_EPOCH,
+                monotonic_ns: 42,
+                batch_id: 7,
+                event_seq: 3,
+                time_between_movements: 0.0,
+                total_duration: 0.0,
+                hover_time: 0.0,
+            },
+            mouse_attributes: MouseMovementAttributes {
+                current_position: (1.0, 2.0),
+                movement_delta: (0.0, 0.0),
+                distance_traveled: 0.0,
+                path_length: 0.0,
+                direction_angles: 0.0,
+                velocity: 0.0,
+                acceleration: 0.0,
+                jerk: 0.0,
+            },
+            behavioral_attributes: BehavioralAttributes {
+                click_events: ClickEvent::Left,
+                scroll_events: ScrollEvent::None,
+            },
+            context_attributes: ContextAttributes {
+                viewport: (900.0, 600.0),
+                coord_space: CoordSpace::Canvas,
+            },
+        };
+        let row = csv_row(&data, &DerivedAttributes::default());
+        assert_eq!(row.len(), CSV_COLUMNS.len());
+
+        // The version-2 columns carry the values needed to interpret the row.
+        let value = |name: &str| {
+            let idx = CSV_COLUMNS.iter().position(|c| *c == name).expect("column");
+            row[idx].clone()
+        };
+        assert_eq!(value("monotonic_ns"), "42");
+        assert_eq!(value("batch_id"), "7");
+        assert_eq!(value("event_seq"), "3");
+        assert_eq!(value("viewport_width"), "900");
+        assert_eq!(value("viewport_height"), "600");
+        assert_eq!(value("coord_space"), "canvas");
+        assert_eq!(value("schema_version"), SCHEMA_VERSION.to_string());
+    }
+
+    /// End-to-end check of the property the schema exists to record.
+    ///
+    /// Reproduces the real ingestion pattern: several pointer events drained
+    /// together in a tight loop, then a frame boundary, then a pause. The events
+    /// within a burst are microseconds apart despite representing a frame's
+    /// worth of motion, which is exactly why `time_between_movements` alone
+    /// cannot be trusted. `batch_id` must separate the bursts.
+    #[test]
+    fn batch_id_groups_events_drained_together() {
+        const EVENTS_PER_FRAME: usize = 4;
+        const FRAMES: usize = 5;
+        const VIEWPORT: Coordinate = (900.0, 600.0);
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let _guard = runtime.enter();
+        let collector = runtime.block_on(MouseCollector::new(false, false));
+
+        let data_dir = std::env::temp_dir().join("mouse_telemetry_test_batches");
+        let _ = std::fs::remove_dir_all(&data_dir);
+        collector.set_data_dir(data_dir.to_string_lossy().into_owned());
+
+        let mut events = Vec::new();
+        for frame in 0..FRAMES {
+            // A frame's worth of coalesced events, dispatched back to back.
+            for step in 0..EVENTS_PER_FRAME {
+                let offset = (frame * EVENTS_PER_FRAME + step) as f64;
+                events.push(collector.build_event(
+                    (offset * 3.0, offset * 2.0),
+                    VIEWPORT,
+                    CoordSpace::Canvas,
+                    ClickEvent::None,
+                    ScrollEvent::None,
+                ));
+            }
+            collector.mark_frame();
+            std::thread::sleep(time::Duration::from_millis(15));
+        }
+
+        let processed = collector.calculate_collection_attributes(&events);
+        let derived = collector.calculate_derived_attributes(&processed);
+        collector.write_data_to_csv(processed, derived);
+
+        let filename = collector.record_filename.read().expect("filename").clone();
+        let mut reader = csv::Reader::from_path(data_dir.join(&filename)).expect("read csv");
+        let header = reader.headers().expect("header").clone();
+        assert_eq!(header.len(), CSV_COLUMNS.len());
+        assert!(header.iter().eq(CSV_COLUMNS.iter().copied()));
+
+        let column = |name: &str| header.iter().position(|c| c == name).expect("column");
+        let (dt_col, batch_col, seq_col) = (
+            column("time_between_movements"),
+            column("batch_id"),
+            column("event_seq"),
+        );
+        let (vw_col, vh_col) = (column("viewport_width"), column("viewport_height"));
+
+        let rows: Vec<csv::StringRecord> =
+            reader.records().collect::<Result<_, _>>().expect("rows");
+        assert_eq!(rows.len(), FRAMES * EVENTS_PER_FRAME);
+
+        let field = |row: &csv::StringRecord, idx: usize| -> f64 {
+            row[idx].parse().expect("numeric field")
+        };
+
+        let mut distinct_batches = 1;
+        for window in rows.windows(2) {
+            let (previous, current) = (&window[0], &window[1]);
+            assert_eq!(current.len(), CSV_COLUMNS.len());
+            assert!(
+                field(current, seq_col) > field(previous, seq_col),
+                "event_seq must preserve arrival order"
+            );
+            assert_eq!(field(current, vw_col), VIEWPORT.0);
+            assert_eq!(field(current, vh_col), VIEWPORT.1);
+
+            let dt = field(current, dt_col);
+            if field(current, batch_col) == field(previous, batch_col) {
+                assert!(
+                    dt < 0.001,
+                    "events sharing a batch are drained together, so dt is overhead: {dt}"
+                );
+            } else {
+                distinct_batches += 1;
+                assert!(
+                    dt > 0.005,
+                    "a batch boundary should span the real gap between frames: {dt}"
+                );
+            }
+        }
+        assert_eq!(distinct_batches, FRAMES, "each frame forms its own batch");
+
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 }
