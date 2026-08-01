@@ -1345,8 +1345,12 @@ class Trainer:
                 self.patience_counter += 1
                 is_best = False
             
-            # Save checkpoint
-            if epoch % 10 == 0 or is_best:
+            # Save checkpoint. The final epoch is always saved: combined_loss
+            # (d_loss + g_loss) is not a reliable "best" signal (it can stop
+            # improving early while endpoint/direction losses keep dropping),
+            # so without this the most-trained model may never reach disk.
+            is_last_epoch = epoch == num_epochs - 1
+            if epoch % 10 == 0 or is_best or is_last_epoch:
                 checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
                 self.save_checkpoint(checkpoint_path, is_best)
             
