@@ -1,0 +1,10 @@
+# Rust build output
+target/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Training artifacts written by python/learning/RecurrentGAN.py
+checkpoints/
+runs/
