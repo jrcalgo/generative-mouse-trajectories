@@ -48,7 +48,10 @@ class Config:
     screen_height: float = 1080.0
     min_trajectory_length: int = 5
     max_trajectory_length: int = 200
-    
+    # Cap on base (pre-augmentation) trajectories loaded; None = no limit.
+    # Exists for fast, comparable scaled-down runs on CPU.
+    limit_trajectories: Optional[int] = None
+
     # Model
     latent_dim: int = 64
     generator_hidden_dim: int = 256
@@ -117,67 +120,129 @@ class MouseTrajectoryDataset(Dataset):
         self.augment = augment
         self.trajectories: List[Dict] = []
         
-        # Load all CSV files from directory
+        # Reconstruction bookkeeping, reported after loading for transparency:
+        # confirms which run actually used batch_id-based timing and which fell
+        # back to the raw (drain-time) dt.
+        self._reconstructed_trajectories = 0
+        self._raw_dt_trajectories = 0
+
+        # Load all CSV files from directory. Sorted so trajectory order (and
+        # therefore what --limit_trajectories keeps) is identical regardless of
+        # which directory is passed in.
         data_path = Path(data_path)
         if data_path.is_file():
             csv_files = [data_path]
         else:
-            csv_files = list(data_path.glob("*.csv"))
-        
+            csv_files = sorted(data_path.glob("*.csv"))
+
         for csv_file in csv_files:
             self._load_csv(csv_file)
-        
+
         base_count = len(self.trajectories)
-        
+
+        if self.config.limit_trajectories is not None and self.config.limit_trajectories < base_count:
+            self.trajectories = self.trajectories[:self.config.limit_trajectories]
+            base_count = len(self.trajectories)
+
         # Apply data augmentation if enabled
         if self.augment:
             self._augment_trajectories()
-        
+
         print(f"Loaded {base_count} base trajectories from {len(csv_files)} files")
         if self.augment:
             print(f"After augmentation: {len(self.trajectories)} trajectories (4x via mirroring)")
-    
+        print(
+            f"Timing source: {self._reconstructed_trajectories} trajectories used "
+            f"batch_id reconstruction, {self._raw_dt_trajectories} used raw "
+            f"time_between_movements"
+        )
+
     def _load_csv(self, csv_path: Path) -> None:
         """Load and segment trajectories from a CSV file."""
         with open(csv_path, 'r') as f:
             reader = csv.DictReader(f)
-            
+            has_batch_id = reader.fieldnames is not None and 'batch_id' in reader.fieldnames
+
             current_trajectory: List[Dict] = []
-            
+
             for row in reader:
                 total_duration = float(row['total_duration'])
-                
+
                 # Reset indicates new trajectory
                 if total_duration == 0 and len(current_trajectory) > 0:
                     self._process_trajectory(current_trajectory)
                     current_trajectory = []
-                
+
                 current_trajectory.append({
                     'x': float(row['position_x']),
                     'y': float(row['position_y']),
                     'dt': float(row['time_between_movements']),
+                    'total_duration': total_duration,
+                    'batch_id': int(row['batch_id']) if has_batch_id and row['batch_id'] != '' else None,
                     'click': row.get('click_events', 'None')
                 })
-            
+
             # Process last trajectory
             if len(current_trajectory) > 0:
                 self._process_trajectory(current_trajectory)
-    
+
+    @staticmethod
+    def _reconstruct_times_from_batches(total_duration: np.ndarray, batch_id: np.ndarray) -> np.ndarray:
+        """
+        Redistributes cumulative time across events recorded in the same delivery
+        batch (mouse-telemetry's batch_id; see bin/backfill.rs for how it's derived).
+
+        Events sharing a batch_id were dispatched together by the windowing
+        toolkit's drain loop, so the near-zero dt between them is drain overhead,
+        not real motion. The underlying motion is assumed to have occurred
+        smoothly since the previous batch closed, so each batch's points are
+        spread uniformly across [previous_batch_end, this_batch_end], where the
+        endpoints come from the recorded (real) cumulative time at each batch's
+        boundary.
+        """
+        n = len(total_duration)
+        t = total_duration.astype(np.float64).copy()
+        prev_batch_end = 0.0
+        start = 0
+        for i in range(1, n + 1):
+            if i == n or batch_id[i] != batch_id[start]:
+                end = i  # half-open [start, end)
+                batch_end = float(total_duration[end - 1])
+                size = end - start
+                for offset, j in enumerate(range(start, end)):
+                    t[j] = prev_batch_end + (offset + 1) / size * (batch_end - prev_batch_end)
+                prev_batch_end = batch_end
+                start = end
+        return t
+
     def _process_trajectory(self, points: List[Dict]) -> None:
         """Process a raw trajectory into training format."""
         if len(points) < self.config.min_trajectory_length:
             return
         if len(points) > self.config.max_trajectory_length:
             points = points[:self.config.max_trajectory_length]
-        
+
         # Extract positions
         positions = np.array([[p['x'], p['y']] for p in points], dtype=np.float32)
-        dts = np.array([p['dt'] for p in points], dtype=np.float32)
-        
+
         # Compute deltas (dx, dy)
         deltas = np.diff(positions, axis=0)
-        dts = dts[1:]  # dt corresponds to time to reach this point
-        
+
+        batch_ids = [p['batch_id'] for p in points]
+        if all(b is not None for b in batch_ids):
+            total_durations = np.array([p['total_duration'] for p in points], dtype=np.float64)
+            reconstructed_t = self._reconstruct_times_from_batches(
+                total_durations, np.array(batch_ids, dtype=np.int64)
+            )
+            dts = np.diff(reconstructed_t).astype(np.float32)
+            self._reconstructed_trajectories += 1
+        else:
+            # No batch_id available (pre-schema-version-2 data): fall back to
+            # the raw recorded dt, corrupted drain-time bursts included.
+            raw_dts = np.array([p['dt'] for p in points], dtype=np.float32)
+            dts = raw_dts[1:]  # dt corresponds to time to reach this point
+            self._raw_dt_trajectories += 1
+
         # Avoid division by zero
         dts = np.maximum(dts, 1e-6)
         
@@ -1461,7 +1526,22 @@ def parse_args():
     # Model
     parser.add_argument('--latent_dim', type=int, default=64, help='Latent dimension')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Generator hidden dimension')
-    
+    parser.add_argument('--discriminator_hidden_dim', type=int, default=128, help='Discriminator hidden dimension')
+
+    # Scaled-down / comparable runs
+    parser.add_argument(
+        '--max_trajectory_length', type=int, default=200,
+        help='Truncate trajectories longer than this many steps'
+    )
+    parser.add_argument(
+        '--limit_trajectories', type=int, default=None,
+        help='Cap on base (pre-augmentation) trajectories loaded, for fast comparable runs'
+    )
+    parser.add_argument(
+        '--teacher_forcing_decay_epochs', type=int, default=100,
+        help='Epochs over which teacher forcing decays to 0; lower for short runs'
+    )
+
     return parser.parse_args()
 
 
@@ -1480,7 +1560,12 @@ def main():
     config.epochs = args.epochs
     config.latent_dim = args.latent_dim
     config.generator_hidden_dim = args.hidden_dim
-    
+    config.discriminator_hidden_dim = args.discriminator_hidden_dim
+    config.max_trajectory_length = args.max_trajectory_length
+    config.max_generation_steps = args.max_trajectory_length
+    config.limit_trajectories = args.limit_trajectories
+    config.teacher_forcing_decay_epochs = args.teacher_forcing_decay_epochs
+
     if args.generate:
         # Generation mode
         if args.checkpoint is None:
